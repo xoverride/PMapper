@@ -107,6 +107,18 @@ def provide_arguments(parser: ArgumentParser):
         required=True
     )
 
+    externalaccess_parser = orgs_subparser.add_parser(
+        'externalaccess',
+        description='Lists the external access for the AWS Organization',
+        help='Lists the external access for the AWS Organization'
+    )
+
+    externalaccess_parser.add_argument(
+        '--org',
+        help='The ID of the organization to update',
+        required=True
+    )
+
 
 def process_arguments(parsed_args: Namespace):
     """Given a namespace object generated from parsing args, perform the appropriate tasks. Returns an int
@@ -274,6 +286,87 @@ def process_arguments(parsed_args: Namespace):
         if parsed_args.org is None:
             print('Please specify an Org ID for which cross account access should be loaded into the Organisation')
             return 64
+
+        org_filepath = os.path.join(get_storage_root(), parsed_args.org)
+        org_tree = OrganizationTree.create_from_dir(org_filepath)
+
+        graph_objs = []
+        for account in org_tree.accounts:
+            try:
+                potential_path = os.path.join(get_storage_root(), account)
+                logger.debug('Trying to load a Graph from {}'.format(potential_path))
+                graph_obj = Graph.create_graph_from_local_disk(potential_path)
+                graph_objs.append(graph_obj)
+            except Exception as ex:
+                logger.warning('Unable to load a Graph object for account {}, possibly because it is not mapped yet. '
+                               'Please map all accounts and then update the Organization Tree '
+                               '(`pmapper orgs update --org $ORG_ID`).'.format(account))
+                logger.debug(str(ex))
+
+        account_external_access_map = {}
+        for graph_obj in graph_objs:
+            current_account_id = graph_obj.metadata['account_id']
+            account_external_access_map[current_account_id] = {
+                'external_principals': [],
+                'internal_principals': []
+            }
+            external_access_nodes = externalaccess.determine_external_access(graph_obj, include_fedenerated = False)
+            for node in external_access_nodes:
+                for principal in node.allowed_external_access:
+                    if is_valid_aws_account_id(principal):
+                        # Got an account ID
+                        account_id = principal
+                    elif validate_arn(principal):
+                        # Got a user, role, or root of account. Extract the account id
+                        account_id = get_account_id(principal)
+                    else:
+                        pass # Check why we got here
+
+                    # Check if the account id is within the Org
+                    if account_id in org_tree.accounts:
+                        account_external_access_map[current_account_id]['internal_principals'].append({
+                            'source': node.arn,
+                            'destination': principal
+                            })
+                    else:
+                        account_external_access_map[current_account_id]['external_principals'].append({
+                            'source': node.arn,
+                            'destination': principal
+                            })
+            for account_id in sorted(account_external_access_map):
+                # print external access
+                print(f"External access for account {account_id}")
+                external_accounts = set()
+                for external_principal in account_external_access_map[account_id]['external_principals']:
+                    print(f"{external_principal['destination']} -> {external_principal['source']}")
+                    principal = external_principal['destination']
+                    if is_valid_aws_account_id(principal):
+                        # Got an account ID
+                        account_id = principal
+                    elif validate_arn(principal):
+                        # Got a user, role, or root of account. Extract the account id
+                        account_id = get_account_id(principal)
+                    external_accounts.add(account_id)
+                print(external_accounts)
+            
+            for account_id in sorted(account_external_access_map):
+                # print external access
+                print(f"Internal access for account {account_id}")
+                external_accounts = set()
+                for internal_principal in account_external_access_map[account_id]['internal_principals']:
+                    print(f"{internal_principal['destination']} -> {internal_principal['source']}")
+                    principal = internal_principal['destination']
+                    if is_valid_aws_account_id(principal):
+                        # Got an account ID
+                        account_id = principal
+                    elif validate_arn(principal):
+                        # Got a user, role, or root of account. Extract the account id
+                        account_id = get_account_id(principal)
+                    external_accounts.add(account_id)
+                print(external_accounts)
+
+    if parsed_args.picked_orgs_cmd == 'externalaccess':
+        logger.debug('Called create subcommand for organizations')
 
         org_filepath = os.path.join(get_storage_root(), parsed_args.org)
         org_tree = OrganizationTree.create_from_dir(org_filepath)
