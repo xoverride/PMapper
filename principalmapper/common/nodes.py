@@ -89,6 +89,8 @@ class Node(object):
 
         self.cache = {}
 
+        self.allowed_external_access = []
+
     def searchable_name(self) -> str:
         """Creates and caches the searchable name of this node. First it splits the user/.../name into its
         parts divided by slashes, then returns the first and last element. The last element is supposed to be unique

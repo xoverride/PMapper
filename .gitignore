@@ -16,3 +16,11 @@
 
 # Ignore venv
 /venv*
+/.venv*
+/.vscode*
+
+# Ignore build directory
+/build*
+
+# Egg-Info
+/principalmapper.egg-info

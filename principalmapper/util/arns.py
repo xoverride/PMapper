@@ -23,6 +23,11 @@ arn:<partition>:<service>:<region>:<account id>:<resource/identifier>
 #      You should have received a copy of the GNU Affero General Public License
 #      along with Principal Mapper.  If not, see <https://www.gnu.org/licenses/>.
 
+import re
+
+def is_valid_aws_account_id(string):
+    pattern = r'^\d{12}$'
+    return bool(re.match(pattern, string))
 
 def get_partition(arn: str):
     """Returns the partition from a string ARN."""
