@@ -24,7 +24,7 @@ from argparse import ArgumentParser, Namespace
 from pathlib import Path
 from typing import List
 
-from principalmapper.common import OrganizationTree, OrganizationNode, Graph, OrganizationAccount, Policy
+from principalmapper.common import OrganizationTree, OrganizationNode, Graph, OrganizationAccount, Policy, Node, Edge
 from principalmapper.graphing.cross_account_edges import get_edges_between_graphs
 from principalmapper.graphing.gathering import get_organizations_data
 from principalmapper.querying.query_orgs import produce_scp_list
@@ -92,18 +92,6 @@ def provide_arguments(parser: ArgumentParser):
     identitycenter_parser.add_argument(
         '--org',
         help='The ID of the organization to display',
-        required=True
-    )
-
-    externalaccess_parser = orgs_subparser.add_parser(
-        'externalaccess',
-        description='Lists the external access for the AWS Organization',
-        help='Lists the external access for the AWS Organization'
-    )
-
-    externalaccess_parser.add_argument(
-        '--org',
-        help='The ID of the organization to update',
         required=True
     )
 
@@ -276,7 +264,36 @@ def process_arguments(parsed_args: Namespace):
         if not current_account_id == org_tree.management_account_id:
             print('Please run this command from the management account')
             return 64
+        
+        # Load accoung graphs
+        graph_objs = []
+        for account in org_tree.accounts:
+            try:
+                potential_path = os.path.join(get_storage_root(), account)
+                logger.debug('Trying to load a Graph from {}'.format(potential_path))
+                graph_obj = Graph.create_graph_from_local_disk(potential_path)
+                graph_objs.append(graph_obj)
+            except Exception as ex:
+                logger.warning('Unable to load a Graph object for account {}, possibly because it is not mapped yet. '
+                               'Please map all accounts and then update the Organization Tree '
+                               '(`pmapper orgs update --org $ORG_ID`).'.format(account))
+                logger.debug(str(ex))
+        
+        # Fetch users and groups
+        # Create nodes for each user and group
 
+        # Create an edge between the users and groups it is a member of
+        #   Use: generate_group_membership_edge
+        #   Collect edges, and store them
+
+        # For each account in the org:
+        #   get the Permission Sets assigned to the account
+        #   then get the Account Assignments for each Permission Set assigned to the account
+        #   then create an edge between the user/group and the role in the account
+        #   Use: generate_account_assignment_edge
+        #   Collect edges, and store them
+        # 
+        pass
         
 
     if parsed_args.picked_orgs_cmd == 'externalaccess':
@@ -495,3 +512,32 @@ def _update_accounts_with_ou_path_map(org_id: str, account_ou_map: dict, root_di
                 'Account {} of organization {} does not have a Graph. You will need to update the '
                 'organization data at a later point (`pmapper orgs update --org $ORG_ID`).'.format(account.account_id, org_id)
             )  # warning gets thrown up by caller, no need to reiterate
+
+
+def get_graph_for_account(graph_objs, account_id) -> Graph:
+    return next(graph for graph in graph_objs if graph.metadata['account_id'] == account_id)
+
+def get_permission_set_role(graph, permission_set_name) -> Node:
+    permission_set_name_prefix = f"AWSReservedSSO_{permission_set_name}_"
+    return next(
+        node for node in graph.nodes
+        if permission_set_name_prefix in node.arn
+    )
+
+def generate_group_membership_edge(user_arn, group_arn):
+    return Edge(
+        source=user_arn, # User arn
+        destination=group_arn, # Group arn
+        reason="Identity Centre group membership",
+        short_reason="group_membership"
+    )
+
+def generate_account_assignment_edge(graph_objs, account_id, permission_set_name, source_principal_arn):
+    graph = get_graph_for_account(graph_objs,account_id)
+    role = get_permission_set_role(graph,permission_set_name)
+    return Edge(
+        source=source_principal_arn, # User or group arn
+        destination=role.arn,
+        reason="Identity Centre provisioned access",
+        short_reason="identitystore"
+    )
