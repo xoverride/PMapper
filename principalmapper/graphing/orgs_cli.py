@@ -31,6 +31,9 @@ from principalmapper.querying.query_orgs import produce_scp_list
 from principalmapper.util import botocore_tools
 from principalmapper.util.storage import get_storage_root
 
+from principalmapper.querying.presets import externalaccess
+from principalmapper.util.arns import get_resource, validate_arn, get_account_id, is_valid_aws_account_id
+
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +81,18 @@ def provide_arguments(parser: ArgumentParser):
     display_parser.add_argument(
         '--org',
         help='The ID of the organization to display',
+        required=True
+    )
+
+    externalaccess_parser = orgs_subparser.add_parser(
+        'externalaccess',
+        description='Lists the external access for the AWS Organization',
+        help='Lists the external access for the AWS Organization'
+    )
+
+    externalaccess_parser.add_argument(
+        '--org',
+        help='The ID of the organization to update',
         required=True
     )
 
@@ -168,6 +183,7 @@ def process_arguments(parsed_args: Namespace):
             for graph_obj_b in graph_objs:
                 if graph_obj_a == graph_obj_b:
                     continue
+                logger.info('Generating edges from {} to {}'.format(graph_obj_a.metadata['account_id'],graph_obj_b.metadata['account_id']))
                 graph_a_scps = produce_scp_list(graph_obj_a, org_tree)
                 graph_b_scps = produce_scp_list(graph_obj_b, org_tree)
                 edge_list.extend(get_edges_between_graphs(graph_obj_a, graph_obj_b, graph_a_scps, graph_b_scps))
@@ -216,6 +232,87 @@ def process_arguments(parsed_args: Namespace):
                 with open(str(metadata_file)) as fd:
                     version = json.load(fd)['pmapper_version']
                 print("{} (PMapper Version {})".format(direct.name, version))
+
+    if parsed_args.picked_orgs_cmd == 'externalaccess':
+        logger.debug('Called create subcommand for organizations')
+
+        org_filepath = os.path.join(get_storage_root(), parsed_args.org)
+        org_tree = OrganizationTree.create_from_dir(org_filepath)
+
+        graph_objs = []
+        for account in org_tree.accounts:
+            try:
+                potential_path = os.path.join(get_storage_root(), account)
+                logger.debug('Trying to load a Graph from {}'.format(potential_path))
+                graph_obj = Graph.create_graph_from_local_disk(potential_path)
+                graph_objs.append(graph_obj)
+            except Exception as ex:
+                logger.warning('Unable to load a Graph object for account {}, possibly because it is not mapped yet. '
+                               'Please map all accounts and then update the Organization Tree '
+                               '(`pmapper orgs update --org $ORG_ID`).'.format(account))
+                logger.debug(str(ex))
+
+        account_external_access_map = {}
+        for graph_obj in graph_objs:
+            current_account_id = graph_obj.metadata['account_id']
+            account_external_access_map[current_account_id] = {
+                'external_principals': [],
+                'internal_principals': []
+            }
+            external_access_nodes = externalaccess.determine_external_access(graph_obj, include_fedenerated = False)
+            for node in external_access_nodes:
+                for principal in node.allowed_external_access:
+                    if is_valid_aws_account_id(principal):
+                        # Got an account ID
+                        account_id = principal
+                    elif validate_arn(principal):
+                        # Got a user, role, or root of account. Extract the account id
+                        account_id = get_account_id(principal)
+                    else:
+                        pass # Check why we got here
+
+                    # Check if the account id is within the Org
+                    if account_id in org_tree.accounts:
+                        account_external_access_map[current_account_id]['internal_principals'].append({
+                            'source': node.arn,
+                            'destination': principal
+                            })
+                    else:
+                        account_external_access_map[current_account_id]['external_principals'].append({
+                            'source': node.arn,
+                            'destination': principal
+                            })
+            for account_id in sorted(account_external_access_map):
+                # print external access
+                print(f"External access for account {account_id}")
+                external_accounts = set()
+                for external_principal in account_external_access_map[account_id]['external_principals']:
+                    print(f"{external_principal['destination']} -> {external_principal['source']}")
+                    principal = external_principal['destination']
+                    if is_valid_aws_account_id(principal):
+                        # Got an account ID
+                        account_id = principal
+                    elif validate_arn(principal):
+                        # Got a user, role, or root of account. Extract the account id
+                        account_id = get_account_id(principal)
+                    external_accounts.add(account_id)
+                print(external_accounts)
+            
+            for account_id in sorted(account_external_access_map):
+                # print external access
+                print(f"Internal access for account {account_id}")
+                external_accounts = set()
+                for internal_principal in account_external_access_map[account_id]['internal_principals']:
+                    print(f"{internal_principal['destination']} -> {internal_principal['source']}")
+                    principal = internal_principal['destination']
+                    if is_valid_aws_account_id(principal):
+                        # Got an account ID
+                        account_id = principal
+                    elif validate_arn(principal):
+                        # Got a user, role, or root of account. Extract the account id
+                        account_id = get_account_id(principal)
+                    external_accounts.add(account_id)
+                print(external_accounts)
 
     return 0
 
