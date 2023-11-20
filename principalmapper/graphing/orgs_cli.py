@@ -24,7 +24,7 @@ from argparse import ArgumentParser, Namespace
 from pathlib import Path
 from typing import List
 
-from principalmapper.common import OrganizationTree, OrganizationNode, Graph, OrganizationAccount, Policy, Node, Edge
+from principalmapper.common import OrganizationTree, OrganizationNode, Graph, OrganizationAccount, Policy, Node, Edge, IdentityStore
 from principalmapper.graphing.cross_account_edges import get_edges_between_graphs
 from principalmapper.graphing.gathering import get_organizations_data
 from principalmapper.querying.query_orgs import produce_scp_list
@@ -293,6 +293,20 @@ def process_arguments(parsed_args: Namespace):
         #   Use: generate_account_assignment_edge
         #   Collect edges, and store them
         # 
+
+        # Add the collected data to the org
+        org_tree.identity_stores.append(
+            IdentityStore(
+                arn=,
+                id=,
+                groups=,
+                users=,
+                group_edges=,
+                account_assignment_edges=
+            )
+        )
+        # Save the collected data
+        org_tree.save_organization_to_disk(os.path.join(get_storage_root(), org_tree.org_id))
         pass
         
 
