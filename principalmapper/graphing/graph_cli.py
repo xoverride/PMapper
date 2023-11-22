@@ -187,7 +187,7 @@ def process_arguments(parsed_args: Namespace):
         else:
             session = None
 
-        graph = graph_actions.get_existing_graph(
+        graph = graph_actions(
             session,
             parsed_args.account
         )
