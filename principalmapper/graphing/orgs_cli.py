@@ -24,13 +24,19 @@ from argparse import ArgumentParser, Namespace
 from pathlib import Path
 from typing import List
 
-from principalmapper.common import OrganizationTree, OrganizationNode, Graph, OrganizationAccount, Policy, Node, Group, Edge, IdentityStore
+from principalmapper.common import OrganizationTree, OrganizationNode, Graph, OrganizationAccount, Policy, Node, Edge, IdentityStore
 from principalmapper.graphing.cross_account_edges import get_edges_between_graphs
 from principalmapper.graphing.gathering import get_organizations_data
 from principalmapper.graphing.graph_actions import get_existing_graph
 from principalmapper.querying.query_orgs import produce_scp_list
 from principalmapper.util import botocore_tools
 from principalmapper.util.storage import get_storage_root
+
+from principalmapper.querying.presets import externalaccess
+from principalmapper.util.arns import get_resource, validate_arn, get_account_id, is_valid_aws_account_id
+
+from principalmapper.querying.presets import externalaccess
+from principalmapper.util.arns import get_resource, validate_arn, get_account_id, is_valid_aws_account_id
 
 from principalmapper.querying.presets import externalaccess
 from principalmapper.util.arns import get_resource, validate_arn, get_account_id, is_valid_aws_account_id
