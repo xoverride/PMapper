@@ -24,7 +24,7 @@ from argparse import ArgumentParser, Namespace
 from pathlib import Path
 from typing import List
 
-from principalmapper.common import OrganizationTree, OrganizationNode, Graph, OrganizationAccount, Policy, Node, Edge, IdentityStore
+from principalmapper.common import OrganizationTree, OrganizationNode, Graph, OrganizationAccount, Policy, Node, Edge, Group, IdentityStore
 from principalmapper.graphing.cross_account_edges import get_edges_between_graphs
 from principalmapper.graphing.gathering import get_organizations_data
 from principalmapper.graphing.graph_actions import get_existing_graph
@@ -266,7 +266,8 @@ def process_arguments(parsed_args: Namespace):
                 for group in groups:
                     G = Group(
                             arn="arn:aws:identitystore:::group/" + group["GroupId"],
-                            attached_policies=[]
+                            attached_policies=[],
+                            aws_data=group
                         )
                     obj_groups.append(G)
                     print("\t{:<40} {}".format(group["DisplayName"], G.arn))
@@ -298,7 +299,7 @@ def process_arguments(parsed_args: Namespace):
                 users = users["Users"]
 
                 for user in users:
-
+                    
                     # This for loop is for creating the group membership object array for the IDC user
                     for group_memberships in group_memberships_client.paginate(IdentityStoreId=sso_instance["IdentityStoreId"], MemberId={"UserId": user["UserId"]}):
                         group_memberships = group_memberships["GroupMemberships"]
@@ -316,7 +317,8 @@ def process_arguments(parsed_args: Namespace):
                         False,
                         None, 
                         False,
-                        {}
+                        {},
+                        aws_data=user
                     )
 
                     # This loop is for creating the group membership edges
@@ -325,7 +327,7 @@ def process_arguments(parsed_args: Namespace):
 
                     obj_nodes.append(N)
                     print("\t{:<40} {}".format(user["UserName"], N.arn))
-
+                    
             # The array of user nodes and group membership edges is returned by the function
             return obj_nodes, obj_edges
 
@@ -365,16 +367,16 @@ def process_arguments(parsed_args: Namespace):
             for account in organization_accounts:
                 account_id = account['Id']
 
-                # This try except creates an array of all aws account graph objects for the organisation
-                try:
-                    g = get_existing_graph(session = None, account=account_id)
-                    logger.debug("%s", g)
-                    graph_objs.append(g)
-                except:
+                # Only append graph to array if data for the account exists
+                g = get_existing_graph(session = None, account=account_id)
+                if g == None:
                     logger.warning('\n[!] Unable to load a Graph object for account {}, possibly because it is not mapped yet. '
                                     'Please map all accounts and then update the Organization Tree '
                                     '(`pmapper orgs update --org $ORG_ID`).\n'.format(account_id))
                     continue
+                else:
+                    logger.debug("%s", g)
+                    graph_objs.append(g)
 
                 # This loop loops through all permission sets and then all account assignments for that permission set
                 for permission_sets in permission_sets_paginate.paginate(InstanceArn=sso_instance["InstanceArn"], AccountId=account_id):

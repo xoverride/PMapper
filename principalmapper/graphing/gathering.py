@@ -205,7 +205,7 @@ def get_nodes_groups_and_policies(iamclient) -> dict:
         result['nodes'].append(
             Node(
                 u['Arn'], u['UserId'], user_policies, group_list, None, None, 0, 'PasswordLastUsed' in u, False,
-                boundary_policy, False, _tags
+                boundary_policy, False, _tags, aws_data=u
             )
         )
 
@@ -234,7 +234,7 @@ def get_nodes_groups_and_policies(iamclient) -> dict:
             Node(
                 r['Arn'], r['RoleId'], role_policies, None, r['AssumeRolePolicyDocument'],
                 [x['Arn'] for x in r['InstanceProfileList']], 0, False, False,
-                None, False, _tags
+                None, False, _tags, aws_data=r
             )
         )
 
@@ -538,12 +538,13 @@ def get_unfilled_nodes(iamclient) -> List[Node]:
                 group_memberships=[],
                 trust_policy=None,
                 instance_profile=None,
-                num_access_keys=0,
+                access_keys=0,
                 active_password='PasswordLastUsed' in user,
                 is_admin=False,
                 permissions_boundary=_pb,
                 has_mfa=False,
-                tags=None  # TODO: fix tags for old user-gathering method
+                tags=None,  # TODO: fix tags for old user-gathering method 
+                aws_data=user
             ))
             logger.debug('Adding Node for user ' + user['Arn'])
 
@@ -565,12 +566,13 @@ def get_unfilled_nodes(iamclient) -> List[Node]:
                 group_memberships=[],
                 trust_policy=role['AssumeRolePolicyDocument'],
                 instance_profile=None,
-                num_access_keys=0,
+                access_keys=0,
                 active_password=False,
                 is_admin=False,
                 permissions_boundary=_pb,
                 has_mfa=False,
-                tags=None  # TODO: fix tags for old role-gathering method
+                tags=None,  # TODO: fix tags for old role-gathering method
+                aws_data=role
             ))
 
     # Get instance profiles, paginating results, and attach to roles as appropriate

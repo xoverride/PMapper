@@ -70,6 +70,7 @@ def get_existing_graph(session: Optional[botocore.session.Session], account: Opt
     in principalmapper.util.storage). Uses the session/account parameter to choose the directory from under the
     standard location.
     """
+    
     try:
         if account is not None:
             logger.debug('Loading graph based on given account id: {}'.format(account))

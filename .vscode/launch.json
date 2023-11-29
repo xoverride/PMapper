@@ -11,7 +11,10 @@
             "program": "${workspaceFolder}/pmapper.py",
             "console": "integratedTerminal",
             "justMyCode": true,
-            "args": ["--profile", "460656522281", "orgs", "identitycenter","--org","o-vodjopy6bo"]
-        }
+            // "args": ["neo4j", "load", "--org", "o-vodjopy6bo"]
+            // "args": ["neo4j", "identitycentre", "--org", "o-vodjopy6bo"]
+            // "args": ["--profile", "460656522281", "orgs", "identitycenter", "--org", "o-vodjopy6bo"]
+            "args": ["--profile", "460656522281", "graph", "create", "--include-services", "iam"]
+        // }
     ]
 }

@@ -31,7 +31,7 @@ from principalmapper.querying.query_orgs import produce_scp_list
 from principalmapper.util import botocore_tools
 from principalmapper.graphing import graph_actions
 from principalmapper.util.storage import get_storage_root
-from principalmapper.neo4j.neo4j_driver import load_graph_to_neo4j, load_cross_account_edges_to_neo4j, load_external_edges_to_neo4j
+from principalmapper.neo4j.neo4j_driver import load_graph_to_neo4j, load_cross_account_edges_to_neo4j, load_external_edges_to_neo4j, load_identitycentre_to_neo4j
 
 from principalmapper.querying.presets import externalaccess
 from principalmapper.util.arns import get_resource, validate_arn, get_account_id, is_valid_aws_account_id
@@ -68,6 +68,16 @@ def provide_arguments(parser: ArgumentParser):
         help='Updates the data stored in neo4jn',
     )
     add_cross_account_access_parser.add_argument(
+        '--org',
+        help='The ID of the organization to update'
+    )
+
+    identitycentre_parser = neo4j_subparser.add_parser(
+        'identitycentre',
+        description='Updates the data stored in neo4j',
+        help='Updates the data stored in neo4jn',
+    )
+    identitycentre_parser.add_argument(
         '--org',
         help='The ID of the organization to update'
     )
@@ -113,8 +123,10 @@ def process_arguments(parsed_args: Namespace):
         
             for account in org_tree.accounts:
                 graph_objs.append(graph_actions.get_existing_graph(session=None,account=account))
+                print(1)
         else:
             graph_objs.append(graph_actions.get_existing_graph(session=None,account=account))
+            print(2)
 
         if not graph_objs:
             print('No graphs were loaded. Please check that the account data has already been ingested before running this command')
@@ -125,12 +137,17 @@ def process_arguments(parsed_args: Namespace):
             if not graph_obj:
                 continue
             load_graph_to_neo4j(graph_obj)
+            print(3)
 
         if org_tree.edge_list:
             load_cross_account_edges_to_neo4j(org_tree.edge_list)
 
             external_edges,external_accounts = _generate_external_edges(parsed_args)
             load_external_edges_to_neo4j(external_edges,external_accounts)
+
+        if org_tree.identity_stores:
+            load_identitycentre_to_neo4j(org_tree)
+
 
     elif parsed_args.picked_neo4j_cmd == 'add_cross_account_access':
         logger.debug('Called add_cross_account_access subcommand for neo4j')
@@ -146,6 +163,24 @@ def process_arguments(parsed_args: Namespace):
         
         if org_tree.edge_list:
             load_cross_account_edges_to_neo4j(org_tree.edge_list)
+
+
+    elif parsed_args.picked_neo4j_cmd == 'identitycentre':
+        logger.debug('Called identitycentre subcommand for neo4j')
+
+        # filter the args first
+        if parsed_args.org is None:
+            print('Please specify an Org ID for which cross account access should be loaded into Neo4j')
+            return 64
+        
+        # pull the existing data from disk
+        org_filepath = os.path.join(get_storage_root(), parsed_args.org)
+        org_tree = OrganizationTree.create_from_dir(org_filepath)
+        
+        if org_tree.identity_stores:
+            load_identitycentre_to_neo4j(org_tree)
+        else:
+            logger.warning("[!] No identity_store.json file found. Please run 'pmapper --profile {AWS Account ID} identitycentre --org {Organisation ID}'.")
 
     elif parsed_args.picked_neo4j_cmd == 'external_access':
         logger.debug('Called externalaccess subcommand for neo4j')
