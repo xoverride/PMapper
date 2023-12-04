@@ -83,7 +83,7 @@ class CloudFormationEdgeChecker(EdgeChecker):
         return result
 
 def process_batch(batch: List[Node], nodes: List[Node], progress_queue: Queue, stack_list: List[dict], scps: Optional[List[List[dict]]] = None):
-    batch_result = []
+    result = []
     for node_destination in batch:
         # check that the destination role can be assumed by CloudFormation
         sim_result = resource_policy_authorization(
@@ -133,7 +133,7 @@ def process_batch(batch: List[Node], nodes: List[Node], progress_queue: Queue, s
                     if need_mfa_passrole or need_mfa_create:
                         reason = '(MFA required) ' + reason
 
-                    batch_result.append(Edge(node_source, node_destination, reason, 'Cloudformation'))
+                    result.append(Edge(node_source, node_destination, reason, 'Cloudformation'))
 
             relevant_stacks = []  # we'll reuse this for *ChangeSet
             for stack in stack_list:
@@ -157,7 +157,7 @@ def process_batch(batch: List[Node], nodes: List[Node], progress_queue: Queue, s
                     if need_mfa_update:
                         reason = '(MFA required) ' + reason
 
-                    batch_result.append(Edge(node_source, node_destination, reason, 'Cloudformation'))
+                    result.append(Edge(node_source, node_destination, reason, 'Cloudformation'))
                     break  # let's save ourselves having to dig into every CF stack edge possible
 
             # See if source can call UpdateStack to pass a new role to a stack and use it
@@ -208,11 +208,11 @@ def process_batch(batch: List[Node], nodes: List[Node], progress_queue: Queue, s
                     if need_mfa_make or need_mfa_exe:
                         reason = '(MFA required) ' + reason
 
-                    batch_result.append(Edge(node_source, node_destination, reason, 'Cloudformation'))
+                    result.append(Edge(node_source, node_destination, reason, 'Cloudformation'))
                     break  # save ourselves from digging into all CF stack edges possible
         
         progress_queue.put(1)
-    return batch_result
+    return result
 
 
 def generate_edges_locally(nodes: List[Node], stack_list: List[dict], scps: Optional[List[List[dict]]] = None) -> List[Edge]:

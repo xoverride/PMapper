@@ -100,7 +100,7 @@ def generate_edges_locally(nodes: List[Node], function_list: List[dict], scps: O
         batches = [nodes[i:i + batch_size] for i in range(0, len(nodes), batch_size)]
 
         with Pool(processes=num_processes) as pool:
-            pool_result = pool.starmap_async(process_batch, [(batch, nodes, progress_queue, scps) for batch in batches])
+            pool_result = pool.starmap_async(process_batch, [(batch, nodes, progress_queue, function_list, scps) for batch in batches])
 
             with Progress() as progress:
                 task = progress.add_task("[green]Processing Lambda edges...", total=len(total_nodes))
@@ -120,7 +120,7 @@ def generate_edges_locally(nodes: List[Node], function_list: List[dict], scps: O
 
     return edges
 
-def process_batch(batch: List[Node], nodes: List[Node], progress_queue: Queue, scps: Optional[List[List[dict]]] = None):
+def process_batch(batch: List[Node], nodes: List[Node], progress_queue: Queue, function_list: List[dict], scps: Optional[List[List[dict]]] = None):
 
     result = []
     for node_destination in batch:
