@@ -28,6 +28,11 @@ from principalmapper.querying import query_interface
 from principalmapper.querying.local_policy_simulation import resource_policy_authorization, ResourcePolicyEvalResult
 from principalmapper.util import arns, botocore_tools
 
+from multiprocessing import Pool, Manager, cpu_count
+from multiprocessing.queues import Queue
+from rich.progress import Progress
+import time
+
 
 logger = logging.getLogger(__name__)
 
@@ -77,20 +82,9 @@ class CloudFormationEdgeChecker(EdgeChecker):
             logger.info("Found new edge: {}".format(edge.describe_edge()))
         return result
 
-
-def generate_edges_locally(nodes: List[Node], stack_list: List[dict], scps: Optional[List[List[dict]]] = None) -> List[Edge]:
-    """Generates and returns Edge objects. Works on the assumption that the param `stack_list` is the
-    collected outputs from calling `cloudformation:DescribeStacks`. Thus, it is possible to
-    create a similar output and feed it to this method if you are operating offline (infra-as-code).
-    """
-
-    result = []
-
-    for node_destination in nodes:
-        # check if the destination is a role
-        if ':role/' not in node_destination.arn:
-            continue
-
+def process_batch(batch: List[Node], nodes: List[Node], progress_queue: Queue, stack_list: List[dict], scps: Optional[List[List[dict]]] = None):
+    batch_result = []
+    for node_destination in batch:
         # check that the destination role can be assumed by CloudFormation
         sim_result = resource_policy_authorization(
             'cloudformation.amazonaws.com',
@@ -102,6 +96,7 @@ def generate_edges_locally(nodes: List[Node], stack_list: List[dict], scps: Opti
         )
 
         if sim_result != ResourcePolicyEvalResult.SERVICE_MATCH:
+            progress_queue.put(1)
             continue  # CloudFormation wasn't auth'd to assume the role
 
         for node_source in nodes:
@@ -138,7 +133,7 @@ def generate_edges_locally(nodes: List[Node], stack_list: List[dict], scps: Opti
                     if need_mfa_passrole or need_mfa_create:
                         reason = '(MFA required) ' + reason
 
-                    result.append(Edge(node_source, node_destination, reason, 'Cloudformation'))
+                    batch_result.append(Edge(node_source, node_destination, reason, 'Cloudformation'))
 
             relevant_stacks = []  # we'll reuse this for *ChangeSet
             for stack in stack_list:
@@ -162,7 +157,7 @@ def generate_edges_locally(nodes: List[Node], stack_list: List[dict], scps: Opti
                     if need_mfa_update:
                         reason = '(MFA required) ' + reason
 
-                    result.append(Edge(node_source, node_destination, reason, 'Cloudformation'))
+                    batch_result.append(Edge(node_source, node_destination, reason, 'Cloudformation'))
                     break  # let's save ourselves having to dig into every CF stack edge possible
 
             # See if source can call UpdateStack to pass a new role to a stack and use it
@@ -213,7 +208,51 @@ def generate_edges_locally(nodes: List[Node], stack_list: List[dict], scps: Opti
                     if need_mfa_make or need_mfa_exe:
                         reason = '(MFA required) ' + reason
 
-                    result.append(Edge(node_source, node_destination, reason, 'Cloudformation'))
+                    batch_result.append(Edge(node_source, node_destination, reason, 'Cloudformation'))
                     break  # save ourselves from digging into all CF stack edges possible
+        
+        progress_queue.put(1)
+    return batch_result
 
-    return result
+
+def generate_edges_locally(nodes: List[Node], stack_list: List[dict], scps: Optional[List[List[dict]]] = None) -> List[Edge]:
+    """Generates and returns Edge objects. Works on the assumption that the param `stack_list` is the
+    collected outputs from calling `cloudformation:DescribeStacks`. Thus, it is possible to
+    create a similar output and feed it to this method if you are operating offline (infra-as-code).
+    """
+
+    edges = []
+    role_nodes = [node for node in nodes if ':role/' in node.arn]
+    total_nodes = len(role_nodes)
+
+    num_processes = max(cpu_count() - 1, 1)  # Number of CPU cores minus one, but at least 1
+    batch_size = 200
+    
+    with Manager() as manager:
+        progress_queue = manager.Queue()
+
+        # Create batches of nodes
+        batches = [nodes[i:i + batch_size] for i in range(0, len(nodes), batch_size)]
+
+        with Pool(processes=num_processes) as pool:
+            pool_result = pool.starmap_async(process_batch, [(batch, nodes, progress_queue, stack_list, scps) for batch in batches])
+
+            with Progress() as progress:
+                task = progress.add_task("[green]Processing CloudFormation edges...", total=len(total_nodes))
+
+                while not pool_result.ready():
+                    try:
+                        while not progress_queue.empty():
+                            progress.advance(task, progress_queue.get_nowait())
+                        time.sleep(0.1)
+                    except KeyboardInterrupt:
+                        pool.terminate()
+                        break
+
+        results = pool_result.get()
+        for result in results:
+            edges.extend(result)
+
+    return edges
+
+        

@@ -27,6 +27,11 @@ from principalmapper.querying import query_interface
 from principalmapper.querying.local_policy_simulation import resource_policy_authorization, ResourcePolicyEvalResult
 from principalmapper.util import arns
 
+from multiprocessing import Pool, Manager, cpu_count
+from multiprocessing.queues import Queue
+from rich.progress import Progress
+import time
+
 
 logger = logging.getLogger(__name__)
 
@@ -51,13 +56,44 @@ class EC2EdgeChecker(EdgeChecker):
 def generate_edges_locally(nodes: List[Node], scps: Optional[List[List[dict]]] = None) -> List[Edge]:
     """Generates and returns Edge objects. It is possible to use this method if you are operating offline (infra-as-code).
     """
+    edges = []
+    role_nodes = [node for node in nodes if ':role/' in node.arn]
+    total_nodes = len(role_nodes)
 
+    num_processes = max(cpu_count() - 1, 1)  # Number of CPU cores minus one, but at least 1
+    batch_size = 200
+    
+    with Manager() as manager:
+        progress_queue = manager.Queue()
+
+        # Create batches of nodes
+        batches = [nodes[i:i + batch_size] for i in range(0, len(nodes), batch_size)]
+
+        with Pool(processes=num_processes) as pool:
+            pool_result = pool.starmap_async(process_batch, [(batch, nodes, progress_queue, scps) for batch in batches])
+
+            with Progress() as progress:
+                task = progress.add_task("[green]Processing EC2 edges...", total=len(total_nodes))
+
+                while not pool_result.ready():
+                    try:
+                        while not progress_queue.empty():
+                            progress.advance(task, progress_queue.get_nowait())
+                        time.sleep(0.1)
+                    except KeyboardInterrupt:
+                        pool.terminate()
+                        break
+
+        results = pool_result.get()
+        for result in results:
+            edges.extend(result)
+
+    return edges
+
+
+def process_batch(batch: List[Node], nodes: List[Node], progress_queue: Queue, scps: Optional[List[List[dict]]] = None):
     result = []
-    for node_destination in nodes:
-        # check if destination is a user, skip if so
-        if ':role/' not in node_destination.arn:
-            continue
-
+    for node_destination in batch:
         # check that the destination role can be assumed by EC2
         sim_result = resource_policy_authorization(
             'ec2.amazonaws.com',
@@ -69,6 +105,7 @@ def generate_edges_locally(nodes: List[Node], scps: Optional[List[List[dict]]] =
         )
 
         if sim_result != ResourcePolicyEvalResult.SERVICE_MATCH:
+            progress_queue.put(1)
             continue  # EC2 wasn't auth'd to assume the role
 
         for node_source in nodes:
@@ -184,4 +221,6 @@ def generate_edges_locally(nodes: List[Node], scps: Optional[List[List[dict]]] =
                     )
                     result.append(new_edge)
 
+        progress_queue.put(1)
+    
     return result
