@@ -72,7 +72,7 @@ def generate_edges_locally(nodes: List[Node], scps: Optional[List[List[dict]]] =
             pool_result = pool.starmap_async(process_batch, [(batch, nodes, progress_queue, scps) for batch in batches])
 
             with Progress() as progress:
-                task = progress.add_task("[green]Processing Lambda edges...", total=len(total_nodes))
+                task = progress.add_task("[green]Processing STS edges...", total=len(total_nodes))
 
                 while not pool_result.ready():
                     try:
