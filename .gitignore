@@ -14,7 +14,7 @@
 # Ignore .idea files
 *.idea*
 
-# Ignore venv
+# Ignore coding files
 /venv*
 
 # Ignore vscode

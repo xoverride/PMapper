@@ -34,8 +34,8 @@ class Node(object):
 
     def __init__(self, arn: str, id_value: str, attached_policies: Optional[List[Policy]],
                  group_memberships: Optional[List[Group]], trust_policy: Optional[dict],
-                 instance_profile: Optional[List[str]], num_access_keys: int, active_password: bool, is_admin: bool,
-                 permissions_boundary: Optional[Union[str, Policy]], has_mfa: bool, tags: Optional[dict]):
+                 instance_profile: Optional[List[str]], access_keys: int, active_password: bool, is_admin: bool,
+                 permissions_boundary: Optional[Union[str, Policy]], has_mfa: bool, tags: Optional[dict], aws_data={}):
         """Constructor. Expects an ARN and ID value. Validates parameters based on the type of Node (User/Role),
         and rejects contradictory arguments like an IAM User with a trust policy.
         """
@@ -44,6 +44,14 @@ class Node(object):
         if arn is None or not (resource_value.startswith('user/') or resource_value.startswith('role/')):
             raise ValueError('The parameter arn must be a valid ARN for an IAM user or role.')
         self.arn = arn
+
+        # Convert date constructor to null
+        try: aws_data['CreateDate'] = ""
+        except: pass
+        try: aws_data['RoleLastUsed'] = ""
+        except: pass
+
+        self.aws_data = aws_data
 
         if id_value is None or len(id_value) == 0:
             raise ValueError('The parameter id_value must be a non-empty string.')
@@ -71,10 +79,10 @@ class Node(object):
 
         self.active_password = active_password
 
-        if num_access_keys is None:
+        if access_keys is None:
             self.access_keys = []
         else:
-            self.access_keys = num_access_keys
+            self.access_keys = access_keys
 
         self.is_admin = is_admin
 
@@ -89,6 +97,8 @@ class Node(object):
 
         self.cache = {}
 
+        self.allowed_external_access = []
+        
     def searchable_name(self) -> str:
         """Creates and caches the searchable name of this node. First it splits the user/.../name into its
         parts divided by slashes, then returns the first and last element. The last element is supposed to be unique
@@ -136,5 +146,6 @@ class Node(object):
             "is_admin": self.is_admin,
             "permissions_boundary": _pb,
             "has_mfa": self.has_mfa,
-            "tags": self.tags
+            "tags": self.tags,
+            "aws_data": self.aws_data
         }
