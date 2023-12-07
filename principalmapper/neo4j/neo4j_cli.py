@@ -47,15 +47,15 @@ def provide_arguments(parser: ArgumentParser):
 
     neo4j_subparser = parser.add_subparsers(
         title='neo4j_subcommand',
-        description='The subcommand to use in the organizations component of Principal Mapper',
+        description='The subcommand to use in the neo4j component of Principal Mapper',
         dest='picked_neo4j_cmd',
-        help='Select an organizations subcommand to execute'
+        help='Select neo4j subcommand to execute'
     )
 
     load_parser = neo4j_subparser.add_parser(
         'load',
-        description='Loads all graphed accounts within AWS Organizations data into neo4j',
-        help='Loads all graphed accounts within AWS Organizations data into neo4j',
+        description='Loads all graphed accounts within the AWS Organizations into neo4j (inculdes cross-account, external access, and Identity Center info)',
+        help='Loads all graphed accounts within AWS Organizations data into neo4j (inculdes cross-account, external access, and Identity Center info)',
     )
     load_parser.add_argument(
         '--org',
@@ -65,7 +65,7 @@ def provide_arguments(parser: ArgumentParser):
     add_cross_account_access_parser = neo4j_subparser.add_parser(
         'add_cross_account_access',
         description='Updates the data stored in neo4j',
-        help='Updates the data stored in neo4jn',
+        help='Adds cross_account edges to the data stored in neo4j',
     )
     add_cross_account_access_parser.add_argument(
         '--org',
@@ -73,9 +73,9 @@ def provide_arguments(parser: ArgumentParser):
     )
 
     identitycentre_parser = neo4j_subparser.add_parser(
-        'identitycentre',
+        'identitycenter',
         description='Updates the data stored in neo4j',
-        help='Updates the data stored in neo4jn',
+        help='Adds Identity Store data to neo4j',
     )
     identitycentre_parser.add_argument(
         '--org',
@@ -85,7 +85,7 @@ def provide_arguments(parser: ArgumentParser):
     external_access_parser = neo4j_subparser.add_parser(
         'external_access',
         description='Updates the data stored in neo4j',
-        help='Updates the data stored in neo4jn',
+        help='Adds external accounts as nodes, and edges to these nodes, in neo4j',
     )
     external_access_parser.add_argument(
         '--org',
@@ -120,10 +120,8 @@ def process_arguments(parsed_args: Namespace):
         
             for account in org_tree.accounts:
                 graph_objs.append(graph_actions.get_existing_graph(session=None,account=account))
-                print(1)
         else:
-            graph_objs.append(graph_actions.get_existing_graph(session=None,account=account))
-            print(2)
+            graph_objs.append(graph_actions.get_existing_graph(session=None,account=parsed_args.account))
 
         if not graph_objs:
             print('No graphs were loaded. Please check that the account data has already been ingested before running this command')
@@ -134,16 +132,20 @@ def process_arguments(parsed_args: Namespace):
             if not graph_obj:
                 continue
             load_graph_to_neo4j(graph_obj)
-            print(3)
 
-        if org_tree.edge_list:
-            load_cross_account_edges_to_neo4j(org_tree.edge_list)
+        if parsed_args.org:
+            if org_tree.edge_list:
+                load_cross_account_edges_to_neo4j(org_tree.edge_list)
 
-            external_edges,external_accounts = _generate_external_edges(parsed_args)
+                external_edges,external_accounts = _generate_external_edges(graph_objs, org_tree)
+                load_external_edges_to_neo4j(external_edges,external_accounts)
+
+            if org_tree.identity_stores:
+                load_identitycentre_to_neo4j(org_tree)
+        else:
+            # Load external edges for the single account
+            external_edges,external_accounts = _generate_external_edges(graph_objs)
             load_external_edges_to_neo4j(external_edges,external_accounts)
-
-        if org_tree.identity_stores:
-            load_identitycentre_to_neo4j(org_tree)
 
 
     elif parsed_args.picked_neo4j_cmd == 'add_cross_account_access':
@@ -191,23 +193,7 @@ def process_arguments(parsed_args: Namespace):
         load_external_edges_to_neo4j(external_edges,external_accounts)
             
         
-def _generate_external_edges(parsed_args):
-    org_filepath = os.path.join(get_storage_root(), parsed_args.org)
-    org_tree = OrganizationTree.create_from_dir(org_filepath)
-
-    graph_objs = []
-    for account in org_tree.accounts:
-        try:
-            potential_path = os.path.join(get_storage_root(), account)
-            logger.debug('Trying to load a Graph from {}'.format(potential_path))
-            graph_obj = Graph.create_graph_from_local_disk(potential_path)
-            graph_objs.append(graph_obj)
-        except Exception as ex:
-            logger.warning('Unable to load a Graph object for account {}, possibly because it is not mapped yet. '
-                            'Please map all accounts and then update the Organization Tree '
-                            '(`pmapper orgs update --org $ORG_ID`).'.format(account))
-            logger.debug(str(ex))
-
+def _generate_external_edges(graph_objs, org_tree=None):
     # Get a unique list of external accounts
     external_accounts = set()
     # Get a list of external edges
@@ -225,10 +211,11 @@ def _generate_external_edges(parsed_args):
                     account_id = get_account_id(principal)
                 else:
                     pass # Check why we got here
-
-                # Check if the account id is within the Org
-                if account_id in org_tree.accounts:
-                    continue
+                
+                if org_tree:
+                    # Check if the account id is within the Org
+                    if account_id in org_tree.accounts:
+                        continue
                 else:
                     external_edges.append(Edge(
                         source=principal,
