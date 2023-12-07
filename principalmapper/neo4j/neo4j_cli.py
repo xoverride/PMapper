@@ -31,7 +31,7 @@ from principalmapper.querying.query_orgs import produce_scp_list
 from principalmapper.util import botocore_tools
 from principalmapper.graphing import graph_actions
 from principalmapper.util.storage import get_storage_root
-from principalmapper.neo4j.neo4j_driver import load_graph_to_neo4j, load_cross_account_edges_to_neo4j, load_external_edges_to_neo4j
+from principalmapper.neo4j.neo4j_driver import load_graph_to_neo4j, load_cross_account_edges_to_neo4j, load_external_edges_to_neo4j, load_identitycentre_to_neo4j
 
 from principalmapper.querying.presets import externalaccess
 from principalmapper.util.arns import get_resource, validate_arn, get_account_id, is_valid_aws_account_id
@@ -72,6 +72,16 @@ def provide_arguments(parser: ArgumentParser):
         help='The ID of the organization to update'
     )
 
+    identitycentre_parser = neo4j_subparser.add_parser(
+        'identitycentre',
+        description='Updates the data stored in neo4j',
+        help='Updates the data stored in neo4jn',
+    )
+    identitycentre_parser.add_argument(
+        '--org',
+        help='The ID of the organization to update'
+    )
+
     external_access_parser = neo4j_subparser.add_parser(
         'external_access',
         description='Updates the data stored in neo4j',
@@ -81,9 +91,6 @@ def provide_arguments(parser: ArgumentParser):
         '--org',
         help='The ID of the organization to update'
     )
-
-    
-
 
 
 def process_arguments(parsed_args: Namespace):
@@ -113,8 +120,10 @@ def process_arguments(parsed_args: Namespace):
         
             for account in org_tree.accounts:
                 graph_objs.append(graph_actions.get_existing_graph(session=None,account=account))
+                print(1)
         else:
             graph_objs.append(graph_actions.get_existing_graph(session=None,account=account))
+            print(2)
 
         if not graph_objs:
             print('No graphs were loaded. Please check that the account data has already been ingested before running this command')
@@ -125,12 +134,17 @@ def process_arguments(parsed_args: Namespace):
             if not graph_obj:
                 continue
             load_graph_to_neo4j(graph_obj)
+            print(3)
 
         if org_tree.edge_list:
             load_cross_account_edges_to_neo4j(org_tree.edge_list)
 
             external_edges,external_accounts = _generate_external_edges(parsed_args)
             load_external_edges_to_neo4j(external_edges,external_accounts)
+
+        if org_tree.identity_stores:
+            load_identitycentre_to_neo4j(org_tree)
+
 
     elif parsed_args.picked_neo4j_cmd == 'add_cross_account_access':
         logger.debug('Called add_cross_account_access subcommand for neo4j')
@@ -146,6 +160,24 @@ def process_arguments(parsed_args: Namespace):
         
         if org_tree.edge_list:
             load_cross_account_edges_to_neo4j(org_tree.edge_list)
+
+
+    elif parsed_args.picked_neo4j_cmd == 'identitycentre':
+        logger.debug('Called identitycentre subcommand for neo4j')
+
+        # filter the args first
+        if parsed_args.org is None:
+            print('Please specify an Org ID for which cross account access should be loaded into Neo4j')
+            return 64
+        
+        # pull the existing data from disk
+        org_filepath = os.path.join(get_storage_root(), parsed_args.org)
+        org_tree = OrganizationTree.create_from_dir(org_filepath)
+        
+        if org_tree.identity_stores:
+            load_identitycentre_to_neo4j(org_tree)
+        else:
+            logger.warning("[!] No identity_store.json file found. Please run 'pmapper --profile {AWS Account ID} identitycentre --org {Organisation ID}'.")
 
     elif parsed_args.picked_neo4j_cmd == 'external_access':
         logger.debug('Called externalaccess subcommand for neo4j')
@@ -206,51 +238,3 @@ def _generate_external_edges(parsed_args):
                     ))
                     external_accounts.add(account_id)
     return external_edges,external_accounts
-
-
-def _map_account_ou_paths(org_tree: OrganizationTree) -> dict:
-    """Given an OrganizationTree, create a map from account -> ou path"""
-    result = {}
-
-    def _traverse(org_node: OrganizationNode, base_string: str):
-        full_node_str = '{}{}/'.format(base_string, org_node.ou_id)
-        for account in org_node.accounts:
-            result[account] = full_node_str
-        for child_node in org_node.child_nodes:
-            _traverse(child_node, full_node_str)
-
-    for root_ou in org_tree.root_ous:
-        _traverse(root_ou, '{}/'.format(org_tree.org_id))
-
-    return result
-
-
-def _update_accounts_with_ou_path_map(org_id: str, account_ou_map: dict, root_dir: str):
-    """Given a map produced by `_map_account_ou_paths` go through the available on-disk graphs and update metadata
-    appropriately."""
-
-    for account, ou_path in account_ou_map.items():
-        potential_path = os.path.join(root_dir, account.account_id, 'metadata.json')
-        if os.path.exists(os.path.join(potential_path)):
-            try:
-                fd = open(potential_path, 'r')
-                metadata = json.load(fd)
-                new_org_data = {
-                    'org-id': org_id,
-                    'org-path': ou_path
-                }
-                logger.debug('Updating {} with org data: {}'.format(account.account_id, new_org_data))
-                metadata['org-id'] = org_id
-                metadata['org-path'] = ou_path
-                fd.close()
-
-                fd = open(potential_path, 'w')
-                json.dump(metadata, fd, indent=4)
-            except IOError as ex:
-                logger.debug('IOError when reading/writing metadata of {}: {}'.format(account.account_id, str(ex)))
-                continue
-        else:
-            logger.debug(
-                'Account {} of organization {} does not have a Graph. You will need to update the '
-                'organization data at a later point (`pmapper orgs update --org $ORG_ID`).'.format(account.account_id, org_id)
-            )  # warning gets thrown up by caller, no need to reiterate

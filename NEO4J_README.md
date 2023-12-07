@@ -33,3 +33,18 @@ External Account Access to Admin:
 MATCH path = (start)-[:EXTERNAL_ACCESS]->(mid)-[:EDGE|CROSS_ACCOUNT_ACCESS*0..]->(end {is_admin: true})
 RETURN path
 ```
+
+### Identity Centre
+
+Access to Admin:
+```cypher
+match path = (realstart)-[:MEMBER_OF*0..1]-(start)-[:IDENTITYCENTRE_ACCESS]-()-[*1..3]->(END {is_admin: true})
+return *
+```
+
+Admin Access to AWS Account:
+```cypher
+MATCH path = (realstart)-[:MEMBER_OF*0..1]-(start)-[:IDENTITYCENTRE_ACCESS]-()-[*1..4]->(END {is_admin: true})
+WHERE END.account_id CONTAINS '{AWS ACCOUNT ID}'
+RETURN path
+```

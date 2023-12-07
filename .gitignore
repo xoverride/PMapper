@@ -14,13 +14,8 @@
 # Ignore .idea files
 *.idea*
 
-# Ignore venv
+# Ignore coding files
 /venv*
-/.venv*
-/.vscode*
 
-# Ignore build directory
-/build*
-
-# Egg-Info
-/principalmapper.egg-info
+# Ignore vscode
+.vscode/

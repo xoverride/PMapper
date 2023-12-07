@@ -1,7 +1,7 @@
 import logging
 
 from neo4j import GraphDatabase
-from principalmapper.common import Graph, Node
+from principalmapper.common import Graph, Node, Group
 
 logger = logging.getLogger(__name__)
 
@@ -10,7 +10,12 @@ uri = "neo4j://localhost:7687"
 def load_nodes_to_neo4j(nodes, account_id, session):
     for node in nodes:
         # Add the node to neo4j
-        node_dict = node.to_dictionary()  # Convert Node object to a dictionary
+        # Check if node is an object and convert to dictionary
+        if not type(node) == Node:
+            node_dict = node
+            node = Node(**node)
+        else:
+            node_dict = node.to_dictionary()  # Convert Node object to a dictionary
         labels = []
         node_type = 'User' if 'user/' in node.arn else 'Role'  # Differentiate between User and Role
         labels.append(node_type)
@@ -19,6 +24,10 @@ def load_nodes_to_neo4j(nodes, account_id, session):
             labels.append('Admin')
         label = ':'.join(labels)
         node_name = '/'.join(node.searchable_name().split('/')[1:])
+        # try:
+        #     name = node_dict["aws_data"]["UserName"]
+        # except:
+        #     name = node_dict["id_value"]
         session.run(f"""
             MERGE (n:{label} {{
                 arn: $arn, 
@@ -28,9 +37,9 @@ def load_nodes_to_neo4j(nodes, account_id, session):
                 is_admin: $is_admin, 
                 has_mfa: $has_mfa,
                 account_id: $account_id,
-                name: $node_name
+                name: $name
             }})
-        """, **node_dict, account_id=account_id, node_name=node_name)
+        """, **node_dict, account_id=account_id, node_name=node_name, name=node_dict["aws_data"]["UserName"])
         # Handle tags separately
         # if node.tags:
         #     add_tags_to_neo4j(node.arn, node.tags, session)
@@ -58,18 +67,31 @@ def load_policies_to_neo4j(policies, account_id, session):
 
 def load_groups_to_neo4j(groups, account_id, session):
     for group in groups:
+        # Check if group is an object and convert to dictionary
+        try:
+            group_dict = group.to_dictionary()  # Convert Node object to a dictionary
+        except:
+            group_dict = group
         labels = []
         node_type = 'Group'
         labels.append(node_type)
         # labels.append(account_id)
         label = ':'.join(labels)
+        # try:
+        #     name = group_dict["aws_data"]["DisplayName"]
+        # except:
+        #     name = group_dict["arn"]
         session.run(f"""
-            MERGE (g:{label} {{arn: $arn, account_id: $account_id}})
-        """, arn=group.arn, account_id=account_id)
+            MERGE (g:{label} {{arn: $arn, account_id: $account_id, name: $name}})
+        """, **group_dict, account_id=account_id, name=group_dict["aws_data"]["DisplayName"])
     logger.info(f"Loaded groups into Neo4j")
 
 def create_relationships(nodes, session):
     for node in nodes:
+
+        if not type(node) == Node:
+            node = Node(**node)
+
         for policy in node.attached_policies:
             session.run("""
                 MATCH (n), (p:Policy)
@@ -78,6 +100,10 @@ def create_relationships(nodes, session):
             """, node_arn=node.arn, policy_arn=policy.arn)
 
         for group in node.group_memberships:
+
+            if not type(group) == Group:
+                group = Group(arn=group, attached_policies=[])
+
             session.run("""
                 MATCH (n), (g:Group)
                 WHERE n.arn = $node_arn AND g.arn = $group_arn
@@ -107,6 +133,18 @@ def load_cross_account_edges_to_neo4j(edges):
                 MERGE (a)-[:CROSS_ACCOUNT_ACCESS {type: $type, reason: $reason}]->(b)
             """, source_arn=edge['source'], destination_arn=edge['destination'], type=edge['short_reason'], reason=edge['reason'])
         logger.info(f"Loaded cross account edges into Neo4j")
+
+def load_identitycentre_edges_to_neo4j(edges):
+    driver = GraphDatabase.driver(uri, auth=("neo4j", ""))
+    with driver.session() as session:
+        for edge in edges:
+            # Assuming edge has source and destination attributes
+            session.run("""
+                MATCH (a), (b)
+                WHERE a.arn = $source_arn AND b.arn = $destination_arn
+                MERGE (a)-[:IDENTITYCENTRE_ACCESS {type: $type, reason: $reason}]->(b)
+            """, source_arn=edge['source'], destination_arn=edge['destination'], type=edge['short_reason'], reason=edge['reason'])
+        logger.info(f"Loaded IdentityCentre edges into Neo4j")
 
 def load_external_edges_to_neo4j(edges, external_accounts):
     driver = GraphDatabase.driver(uri, auth=("neo4j", ""))
@@ -150,11 +188,22 @@ def load_graph_to_neo4j(graph: Graph) -> None:
     with driver.session() as session:
         account_id = graph.metadata['account_id']
         logger.info(f"Loading graph for account {account_id} into Neo4j")
+        # Not adding these for now to improve performance
+        # TODO: Create different types of edges to make more performant Neo4j queries
         # load_policies_to_neo4j(graph.policies, account_id, session)
         # load_groups_to_neo4j(graph.groups, account_id, session)
         load_nodes_to_neo4j(graph.nodes, account_id, session)
         # create_relationships(graph.nodes, session)
         load_edges_to_neo4j(graph.edges, session)
+
+def load_identitycentre_to_neo4j(org_tree) -> None:
+    driver = GraphDatabase.driver(uri, auth=("neo4j", ""))
+    with driver.session() as session:
+        for identity_store in org_tree.identity_stores:
+            load_nodes_to_neo4j(identity_store["users"], org_tree.org_id, session)
+            load_groups_to_neo4j(identity_store["group"], org_tree.org_id, session)
+            create_relationships(identity_store["users"], session)
+            load_identitycentre_edges_to_neo4j(identity_store["group_edges"])
 
 
 # Deleted 3806 nodes, deleted 15257 relationships

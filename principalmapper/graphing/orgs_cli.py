@@ -24,9 +24,10 @@ from argparse import ArgumentParser, Namespace
 from pathlib import Path
 from typing import List
 
-from principalmapper.common import OrganizationTree, OrganizationNode, Graph, OrganizationAccount, Policy
+from principalmapper.common import OrganizationTree, OrganizationNode, Graph, OrganizationAccount, Policy, Node, Edge, Group, IdentityStore
 from principalmapper.graphing.cross_account_edges import get_edges_between_graphs
 from principalmapper.graphing.gathering import get_organizations_data
+from principalmapper.graphing.graph_actions import get_existing_graph
 from principalmapper.querying.query_orgs import produce_scp_list
 from principalmapper.util import botocore_tools
 from principalmapper.util.storage import get_storage_root
@@ -34,9 +35,7 @@ from principalmapper.util.storage import get_storage_root
 from principalmapper.querying.presets import externalaccess
 from principalmapper.util.arns import get_resource, validate_arn, get_account_id, is_valid_aws_account_id
 
-
 logger = logging.getLogger(__name__)
-
 
 def provide_arguments(parser: ArgumentParser):
     """Given a parser object (which should be a subparser), add arguments to provide a CLI interface to the
@@ -84,6 +83,18 @@ def provide_arguments(parser: ArgumentParser):
         required=True
     )
 
+    identitycenter_parser = orgs_subparser.add_parser(
+        'identitycenter',
+        description='Adds Identity Center users to a given AWS Organization',
+        help='Adds Identity Center users to a given AWS Organization'
+    )
+
+    identitycenter_parser.add_argument(
+        '--org',
+        help='The ID of the organization to display',
+        required=True
+    )
+
     externalaccess_parser = orgs_subparser.add_parser(
         'externalaccess',
         description='Lists the external access for the AWS Organization',
@@ -95,7 +106,6 @@ def provide_arguments(parser: ArgumentParser):
         help='The ID of the organization to update',
         required=True
     )
-
 
 def process_arguments(parsed_args: Namespace):
     """Given a namespace object generated from parsing args, perform the appropriate tasks. Returns an int
@@ -233,8 +243,235 @@ def process_arguments(parsed_args: Namespace):
                     version = json.load(fd)['pmapper_version']
                 print("{} (PMapper Version {})".format(direct.name, version))
 
-    if parsed_args.picked_orgs_cmd == 'externalaccess':
-        logger.debug('Called create subcommand for organizations')
+    elif parsed_args.picked_orgs_cmd == 'identitycenter':
+        logger.debug('Called identitycenter subcommand for organizations')
+
+        def get_identitycenter_groups(sso_session, sso_instance):
+        # This function is responsible for retrieving and creating group objects for groups in the IDC
+
+            logger.debug("\nSSO Identitystore Groups:")
+            identitystore_client = sso_session.create_client('identitystore')
+            groups_paginate = identitystore_client.get_paginator('list_groups')
+            obj_groups = []
+
+            for groups in groups_paginate.paginate(IdentityStoreId=sso_instance["IdentityStoreId"]):
+                groups = groups["Groups"]
+
+                for group in groups:
+                    G = Group(
+                            arn="arn:aws:identitystore:::group/" + group["GroupId"],
+                            attached_policies=[],
+                            aws_data=group
+                        )
+                    obj_groups.append(G)
+                    logger.debug("\t{:<40} {}".format(group["DisplayName"], G.arn))
+
+            # Returns the IDC group objects 
+            return obj_groups
+
+        def get_identitycenter_users(sso_session, sso_instance):
+        # This function is responsible for retrieving and creating user objects for users in the IDC
+            
+            def generate_group_membership_edge(user_arn, group_arn):
+            # This function is responsible for retrieving and creating the group memberships for a user in the IDC
+                
+                return Edge(
+                    source=user_arn, # User object
+                    destination=group_arn, # Group object
+                    reason="Identity Centre group membership",
+                    short_reason="group_membership"
+                )
+
+            print("\nSSO Identitystore Users:")
+            identitystore_client = sso_session.create_client('identitystore')
+            users_paginate = identitystore_client.get_paginator('list_users')
+            group_memberships_client = identitystore_client.get_paginator('list_group_memberships_for_member')
+            obj_nodes = []
+            obj_edges = []
+
+            for users in users_paginate.paginate(IdentityStoreId=sso_instance["IdentityStoreId"]):
+                users = users["Users"]
+
+                for user in users:
+                    
+                    # This for loop is for creating the group membership object array for the IDC user
+                    for group_memberships in group_memberships_client.paginate(IdentityStoreId=sso_instance["IdentityStoreId"], MemberId={"UserId": user["UserId"]}):
+                        group_memberships = group_memberships["GroupMemberships"]
+                        group_membership_objs = [Group(arn="arn:aws:identitystore:::group/" + group_membership["GroupId"], attached_policies=[])  for group_membership in group_memberships]
+
+                    N = Node(
+                        "arn:aws:identitystore:::user/" + user["UserId"],
+                        user["UserId"],
+                        [], 
+                        group_membership_objs,
+                        None,
+                        None,
+                        0,
+                        False,
+                        False,
+                        None, 
+                        False,
+                        {},
+                        aws_data=user
+                    )
+
+                    # This loop is for creating the group membership edges
+                    for group_membership_obj in group_membership_objs:
+                        obj_edges.append(generate_group_membership_edge(N, group_membership_obj))
+
+                    obj_nodes.append(N)
+                    print("\t{:<40} {}".format(user["UserName"], N.arn))
+                    
+            # The array of user nodes and group membership edges is returned by the function
+            return obj_nodes, obj_edges
+
+        def get_identitycenter_permission_sets(sso_session, sso_instance):
+        # This function is responsible for retrieving and creating account assignment edges for user or group nodes in the IDC
+            
+            def generate_account_assignment_edge(graph_objs, account_id, permission_set_name, source_principal_obj):
+            # This function is responsible for constructing the account assignment edge objects
+
+                def get_permission_set_role(graph, permission_set_name) -> Node:
+                # This function is responsible for retrieving the IAM role to be assumed in an AWS account
+                # by the user or group node entity, applied through the account assignment
+
+                    permission_set_name_prefix = f"AWSReservedSSO_{permission_set_name}_"
+                    return next(
+                        node for node in graph.nodes
+                        if permission_set_name_prefix in node.arn
+                    )
+
+                graph = next(graph for graph in graph_objs if graph.metadata['account_id'] == account_id)
+                role = get_permission_set_role(graph,permission_set_name)
+                return Edge(
+                    source=source_principal_obj, # User or group object
+                    destination=role,
+                    reason="Identity Centre provisioned access",
+                    short_reason="identitystore"
+                )
+            
+            logger.debug("\nSSO Identitystore Permission Sets:")
+            organization_accounts = sso_session.create_client('organizations').list_accounts()['Accounts']
+            sso_admin_client = sso_session.create_client('sso-admin')
+            permission_sets_paginate = sso_admin_client.get_paginator('list_permission_sets_provisioned_to_account')
+            account_assignments_paginate = sso_admin_client.get_paginator('list_account_assignments')
+            obj_edges = []
+            graph_objs = []
+
+            for account in organization_accounts:
+                account_id = account['Id']
+
+                # Only append graph to array if data for the account exists
+                g = get_existing_graph(session = None, account=account_id)
+                if g == None:
+                    logger.warning('\n[!] Unable to load a Graph object for account {}, possibly because it is not mapped yet. '
+                                    'Please map all accounts and then update the Organization Tree '
+                                    '(`pmapper orgs update --org $ORG_ID`).\n'.format(account_id))
+                    continue
+                else:
+                    logger.debug("%s", g)
+                    graph_objs.append(g)
+
+                # This loop loops through all permission sets and then all account assignments for that permission set
+                for permission_sets in permission_sets_paginate.paginate(InstanceArn=sso_instance["InstanceArn"], AccountId=account_id):
+                    permission_sets = permission_sets.get('PermissionSets', [])
+                    
+                    for permission_set in permission_sets:
+                        
+                        for account_assignments in account_assignments_paginate.paginate(InstanceArn=sso_instance["InstanceArn"], AccountId=account_id, PermissionSetArn=permission_set):
+                            account_assignments = account_assignments["AccountAssignments"]
+                            
+                            # For each account assignment in the permission set an edge is created to map the relationship
+                            # between the IDC user or group node and the IAM role to be assumed in the AWS account access was provisioned to
+                            for account_assignment in account_assignments:
+                                permission_set_information = sso_admin_client.describe_permission_set(InstanceArn=sso_instance["InstanceArn"], PermissionSetArn=account_assignment['PermissionSetArn'])
+                                permission_set_name = permission_set_information["PermissionSet"]["Name"]
+                                principal_type = account_assignment['PrincipalType'].lower()
+                                principal_id = account_assignment['PrincipalId']
+                                source_principal_arn = "arn:aws:identitystore:::{}/{}".format(principal_type, principal_id)
+                                logger.debug("%s %s %s", account_id, permission_set_name, source_principal_arn)
+
+                                # These two for loops loop through the groups and user nodes to get the object associated with the source_principal_arn
+                                source_principal_obj = None
+                                for groups in obj_groups:
+                                    if groups.arn == source_principal_arn:
+                                        source_principal_obj = groups
+                                        break
+                                
+                                if source_principal_obj is None:
+                                    for nodes in obj_nodes:
+                                        if nodes.arn == source_principal_arn:
+                                            source_principal_obj = nodes
+                                            break
+
+                                if source_principal_obj is None: 
+                                    logger.warning("[!] Could not find source_principal_obj based on source_principal_arn: {}".format(source_principal_arn))
+                                else:
+                                    E = generate_account_assignment_edge(graph_objs, account_id, permission_set_name, source_principal_obj)
+                                    obj_edges.append(E)
+                                    logger.debug("\t{} -> {}".format(E.source.arn, E.destination.arn))
+            
+            return obj_edges
+        
+        # Creating an AWS session, requesting all information required from previous graph commands and creating session clients
+        session = botocore_tools.get_session(parsed_args.profile)
+        org_filepath = os.path.join(get_storage_root(), parsed_args.org)
+        org_tree = OrganizationTree.create_from_dir(org_filepath)
+        org_tree.identity_stores = []
+        stsclient = session.create_client('sts')
+        current_account_id = stsclient.get_caller_identity()['Account']  # raises error if it's not workable
+        sso_admin_client = session.create_client('sso-admin')
+        sso_instances = sso_admin_client.list_instances()["Instances"]
+        logger.debug("%s", sso_instances)
+
+        if not current_account_id == org_tree.management_account_id:
+            logger.warning('Please run this command from the management account')
+            return 64
+        
+        # Load accoung graphs
+        graph_objs = []
+        for account in org_tree.accounts:
+            try:
+                potential_path = os.path.join(get_storage_root(), account)
+                logger.debug('Trying to load a Graph from {}'.format(potential_path))
+                graph_obj = Graph.create_graph_from_local_disk(potential_path)
+                graph_objs.append(graph_obj)
+            except Exception as ex:
+                logger.warning('Unable to load a Graph object for account {}, possibly because it is not mapped yet. '
+                               'Please map all accounts and then update the Organization Tree '
+                               '(`pmapper orgs update --org $ORG_ID`).'.format(account))
+                logger.debug(str(ex))
+        
+        # Loop through all SSO IDC identity providers and obtain the group and user nodes,
+        # the user group membership and IDC account assignment edges
+        for sso_instance in sso_instances:
+
+            obj_groups = get_identitycenter_groups(session, sso_instance)
+            obj_nodes, obj_group_edges = get_identitycenter_users(session, sso_instance)
+            obj_account_assignment_edges = get_identitycenter_permission_sets(session, sso_instance)
+
+        # Add the collected data to the org
+            org_tree.identity_stores.append(IdentityStore(
+                    arn=sso_instance["InstanceArn"],
+                    id=sso_instance["IdentityStoreId"],
+                    groups=obj_groups,
+                    users=obj_nodes,
+                    group_edges=obj_group_edges,
+                    account_assignment_edges=obj_account_assignment_edges
+                )
+            )
+
+        # Save the collected data
+        org_tree.save_organization_to_disk(os.path.join(get_storage_root(), org_tree.org_id))
+        
+        
+    elif parsed_args.picked_orgs_cmd == 'externalaccess':
+        logger.debug('Called externalaccess subcommand for organizations')
+
+        # filter the args first
+        if parsed_args.org is None:
+            logger.warning('Please specify an Org ID for which cross account access should be loaded into the Organisation')
+            return 64
 
         org_filepath = os.path.join(get_storage_root(), parsed_args.org)
         org_tree = OrganizationTree.create_from_dir(org_filepath)
@@ -313,9 +550,7 @@ def process_arguments(parsed_args: Namespace):
                         account_id = get_account_id(principal)
                     external_accounts.add(account_id)
                 print(external_accounts)
-
     return 0
-
 
 def _map_account_ou_paths(org_tree: OrganizationTree) -> dict:
     """Given an OrganizationTree, create a map from account -> ou path"""
@@ -332,7 +567,6 @@ def _map_account_ou_paths(org_tree: OrganizationTree) -> dict:
         _traverse(root_ou, '{}/'.format(org_tree.org_id))
 
     return result
-
 
 def _update_accounts_with_ou_path_map(org_id: str, account_ou_map: dict, root_dir: str):
     """Given a map produced by `_map_account_ou_paths` go through the available on-disk graphs and update metadata

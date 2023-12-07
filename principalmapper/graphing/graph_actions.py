@@ -38,6 +38,14 @@ def create_new_graph(session: botocore.session.Session, service_list: List[str],
 
     return gathering.create_graph(session, service_list, region_allow_list, region_deny_list, scps, client_args_map)
 
+def create_new_graph_without_edges(session: botocore.session.Session, service_list: List[str],
+                     region_allow_list: Optional[List[str]] = None, region_deny_list: Optional[List[str]] = None,
+                     scps: Optional[List[List[dict]]] = None, client_args_map: Optional[dict] = None) -> Graph:
+    """Wraps around principalmapper.graphing.gathering.create_graph(...) This fulfills `pmapper graph create`.
+    """
+
+    return gathering.create_graph_without_edges(session, service_list, region_allow_list, region_deny_list, scps, client_args_map)
+
 
 def print_graph_data(graph: Graph) -> None:
     """Given a Graph object, prints a small amount of information about the Graph. This fulfills
@@ -70,6 +78,7 @@ def get_existing_graph(session: Optional[botocore.session.Session], account: Opt
     in principalmapper.util.storage). Uses the session/account parameter to choose the directory from under the
     standard location.
     """
+    
     try:
         if account is not None:
             logger.debug('Loading graph based on given account id: {}'.format(account))
