@@ -24,17 +24,5 @@ import sys
 
 from principalmapper.__main__ import main
 
-import time
-
 if __name__ == '__main__':
-    start_time = time.time()  # Capture the start time
-
-    result = main()
-    
-    end_time = time.time()  # Capture the end time
-    total_time = end_time - start_time  # Calculate total time taken
-
-    print(f"Start Time: {time.ctime(start_time)}")
-    print(f"End Time: {time.ctime(end_time)}")
-    print(f"Total Time Taken: {total_time} seconds")
-    sys.exit(result)
+    sys.exit(main())
