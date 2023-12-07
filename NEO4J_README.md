@@ -9,6 +9,9 @@ docker run --name pmapper --env=NEO4J_AUTH=none --publish=7474:7474 --publish=76
 
 Priv Esc Paths:
 
+You might want to limit the number of edges it searches through by using `[*1..3]` - which will look for 1 to 3 edges between the nodes. Adjust as necessary
+An optional edge can be specified by starting at 0 (ie `[*0..]`)
+
 ```cypher
 MATCH path = (start)-[*1..3]->(end {is_admin: true})
 WHERE start.is_admin = false
@@ -18,14 +21,14 @@ RETURN path
 
 Cross-Account Access:
 ```cypher
-MATCH path = (start:Principal)-[link:CROSS_ACCOUNT_ACCESS]->(middle:Principal) //-[*0..3]->(end:Principal {is_admin: true})
-RETURN start, link, middle
+MATCH path = (start:Principal)-[link:CROSS_ACCOUNT_ACCESS]->-[*0..3]->(end:Principal {is_admin: true})
+RETURN start, link, end
 ```
 
 External Account Access:
 ```cypher
-MATCH path = (start)-[link:EXTERNAL_ACCESS]->(end)//-[*0..3]->(end:Principal {is_admin: true})
-RETURN start, link, end
+MATCH (start:External_Account)-[]->(end:Principal {is_admin: true})
+RETURN *
 ```
 
 External Account Access to Admin:
