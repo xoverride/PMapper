@@ -24,10 +24,8 @@ def load_nodes_to_neo4j(nodes, account_id, session):
             labels.append('Admin')
         label = ':'.join(labels)
         node_name = '/'.join(node.searchable_name().split('/')[1:])
-        # try:
-        #     name = node_dict["aws_data"]["UserName"]
-        # except:
-        #     name = node_dict["id_value"]
+        if node_dict.get("aws_data") and "UserName" in node_dict["aws_data"]:
+            node_name = node_dict["aws_data"]["UserName"]
         session.run(f"""
             MERGE (n:{label} {{
                 arn: $arn, 
@@ -37,9 +35,9 @@ def load_nodes_to_neo4j(nodes, account_id, session):
                 is_admin: $is_admin, 
                 has_mfa: $has_mfa,
                 account_id: $account_id,
-                name: $name
+                name: $node_name
             }})
-        """, **node_dict, account_id=account_id, node_name=node_name, name=node_dict["aws_data"]["UserName"])
+        """, **node_dict, account_id=account_id, node_name=node_name)
         # Handle tags separately
         # if node.tags:
         #     add_tags_to_neo4j(node.arn, node.tags, session)
