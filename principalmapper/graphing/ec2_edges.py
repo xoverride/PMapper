@@ -57,23 +57,27 @@ def generate_edges_locally(nodes: List[Node], scps: Optional[List[List[dict]]] =
     """Generates and returns Edge objects. It is possible to use this method if you are operating offline (infra-as-code).
     """
     edges = []
+    # Filter for roles
     role_nodes = [node for node in nodes if ':role/' in node.arn]
     total_nodes = len(role_nodes)
-
-    num_processes = max(cpu_count() - 1, 1)  # Number of CPU cores minus one, but at least 1
-    batch_size = 200
+    # Number of CPU cores minus one, but at least 1
+    num_processes = max(cpu_count() - 1, 1)  
+    # Calculate batch size
+    base_batch_size = len(role_nodes) // num_processes
+    remainder = len(role_nodes) % num_processes
+    batch_size = base_batch_size + (1 if remainder > 0 else 0)
     
     with Manager() as manager:
         progress_queue = manager.Queue()
 
         # Create batches of nodes
-        batches = [nodes[i:i + batch_size] for i in range(0, len(nodes), batch_size)]
+        batches = [role_nodes[i:i + batch_size] for i in range(0, len(role_nodes), batch_size)]
 
         with Pool(processes=num_processes) as pool:
             pool_result = pool.starmap_async(process_batch, [(batch, nodes, progress_queue, scps) for batch in batches])
 
             with Progress() as progress:
-                task = progress.add_task("[green]Processing EC2 edges...", total=len(total_nodes))
+                task = progress.add_task("[green]Processing EC2 edges...", total=total_nodes)
 
                 while not pool_result.ready():
                     try:
@@ -83,6 +87,10 @@ def generate_edges_locally(nodes: List[Node], scps: Optional[List[List[dict]]] =
                     except KeyboardInterrupt:
                         pool.terminate()
                         break
+                
+                # Final drain in case any items are left in the queue
+                while not progress_queue.empty():
+                    progress.advance(task, progress_queue.get_nowait())
 
         results = pool_result.get()
         for result in results:
