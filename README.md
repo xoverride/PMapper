@@ -7,7 +7,7 @@
   * Identity Center information needs to be first collected if you want it loaded.
   * When run for a single account it will generate nodes and edges for access granted to external accounts
   * When run for an org, it will differentiate between cross-account access and external access, and create nodes for external accounts
-* Performance optimizations in local policy sim 
+* Performance optimizations in local policy simulation
 * Multiprocessing for edge identification
 
 # Principal Mapper
