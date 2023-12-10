@@ -27,12 +27,15 @@ class Group(object):
     that the object represents.
     """
 
-    def __init__(self, arn: str, attached_policies: Optional[List[Policy]], aws_data={}):
+    def __init__(self, arn: str, attached_policies: Optional[List[Policy]], display_name: Optional[str] = None):
         """Constructor"""
         if arn is None or not arns.get_resource(arn).startswith('group/'):
             raise ValueError('Group objects must be constructed with a valid ARN for a group')
         self.arn = arn
-        self.aws_data = aws_data
+        if display_name is None:
+            self.display_name = ""
+        else:
+            self.display_name = display_name
 
         if attached_policies is None:
             self.attached_policies = []
@@ -44,5 +47,5 @@ class Group(object):
         return {
             'arn': self.arn,
             'attached_policies': [{'arn': policy.arn, 'name': policy.name} for policy in self.attached_policies],
-            "aws_data": self.aws_data
+            'display_name': self.display_name
         }

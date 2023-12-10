@@ -35,7 +35,7 @@ class Node(object):
     def __init__(self, arn: str, id_value: str, attached_policies: Optional[List[Policy]],
                  group_memberships: Optional[List[Group]], trust_policy: Optional[dict],
                  instance_profile: Optional[List[str]], access_keys: int, active_password: bool, is_admin: bool,
-                 permissions_boundary: Optional[Union[str, Policy]], has_mfa: bool, tags: Optional[dict], aws_data={}):
+                 permissions_boundary: Optional[Union[str, Policy]], has_mfa: bool, tags: Optional[dict], username: Optional[str] = None):
         """Constructor. Expects an ARN and ID value. Validates parameters based on the type of Node (User/Role),
         and rejects contradictory arguments like an IAM User with a trust policy.
         """
@@ -46,12 +46,10 @@ class Node(object):
         self.arn = arn
 
         # Convert date constructor to null
-        try: aws_data['CreateDate'] = ""
-        except: pass
-        try: aws_data['RoleLastUsed'] = ""
-        except: pass
-
-        self.aws_data = aws_data
+        if username is None:
+            self.username = ""
+        else:
+            self.username = username
 
         if id_value is None or len(id_value) == 0:
             raise ValueError('The parameter id_value must be a non-empty string.')
@@ -147,5 +145,5 @@ class Node(object):
             "permissions_boundary": _pb,
             "has_mfa": self.has_mfa,
             "tags": self.tags,
-            "aws_data": self.aws_data
+            "username": self.username
         }

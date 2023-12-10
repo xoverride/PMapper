@@ -2,6 +2,7 @@ import logging
 
 from neo4j import GraphDatabase
 from principalmapper.common import Graph, Node, Group
+from principalmapper.util import arns
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +25,8 @@ def load_nodes_to_neo4j(nodes, account_id, session):
             labels.append('Admin')
         label = ':'.join(labels)
         node_name = '/'.join(node.searchable_name().split('/')[1:])
-        if node_dict.get("aws_data") and "UserName" in node_dict["aws_data"]:
-            node_name = node_dict["aws_data"]["UserName"]
+        if node_dict.get("username"):
+            node_name = node_dict.get("username")
         session.run(f"""
             MERGE (n:{label} {{
                 arn: $arn, 
@@ -75,13 +76,11 @@ def load_groups_to_neo4j(groups, account_id, session):
         labels.append(node_type)
         # labels.append(account_id)
         label = ':'.join(labels)
-        # try:
-        #     name = group_dict["aws_data"]["DisplayName"]
-        # except:
-        #     name = group_dict["arn"]
+        # Identity Center groups use display_name
+        name = group_dict["display_name"] if group_dict["display_name"] else arns.get_resource_name(group_dict["arn"])
         session.run(f"""
             MERGE (g:{label} {{arn: $arn, account_id: $account_id, name: $name}})
-        """, **group_dict, account_id=account_id, name=group_dict["aws_data"]["DisplayName"])
+        """, **group_dict, account_id=account_id, name=name)
     logger.info(f"Loaded groups into Neo4j")
 
 def create_relationships(nodes, session):

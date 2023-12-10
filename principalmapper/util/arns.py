@@ -55,6 +55,15 @@ def get_resource(arn: str):
     """
     return ':'.join(arn.split(':')[5:])
 
+def get_resource_name(arn: str):
+    """Returns the resource (trailing part) from a string ARN. Note that we're splitting on colons, so we have to
+    join with colons in case the trailing part uses colon-separators instead of forward-slashes.
+    Same for the split on forward-flashes
+    """
+    resource_part = ':'.join(arn.split(':')[5:])
+    resournce_name = '/'.join(resource_part.split('/')[1:])
+    return resournce_name
+
 
 def validate_arn(arn: str) -> bool:
     """Returns true if the provided ARN appears to follow the expected structure of an ARN."""

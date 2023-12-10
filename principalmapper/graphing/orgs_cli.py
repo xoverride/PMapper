@@ -257,14 +257,14 @@ def process_arguments(parsed_args: Namespace):
             for groups in groups_paginate.paginate(IdentityStoreId=sso_instance["IdentityStoreId"]):
                 groups = groups["Groups"]
 
-                for group in groups:
-                    G = Group(
-                            arn="arn:aws:identitystore:::group/" + group["GroupId"],
+                for group_data in groups:
+                    group = Group(
+                            arn="arn:aws:identitystore:::group/" + group_data["GroupId"],
                             attached_policies=[],
-                            aws_data=group
+                            display_name=group_data["DisplayName"]
                         )
-                    obj_groups.append(G)
-                    logger.debug("\t{:<40} {}".format(group["DisplayName"], G.arn))
+                    obj_groups.append(group)
+                    logger.debug("\t{:<40} {}".format(group_data["DisplayName"], group.arn))
 
             # Returns the IDC group objects 
             return obj_groups
@@ -292,16 +292,22 @@ def process_arguments(parsed_args: Namespace):
             for users in users_paginate.paginate(IdentityStoreId=sso_instance["IdentityStoreId"]):
                 users = users["Users"]
 
-                for user in users:
+                for user_data in users:
                     
                     # This for loop is for creating the group membership object array for the IDC user
-                    for group_memberships in group_memberships_client.paginate(IdentityStoreId=sso_instance["IdentityStoreId"], MemberId={"UserId": user["UserId"]}):
+                    for group_memberships in group_memberships_client.paginate(IdentityStoreId=sso_instance["IdentityStoreId"], MemberId={"UserId": user_data["UserId"]}):
                         group_memberships = group_memberships["GroupMemberships"]
-                        group_membership_objs = [Group(arn="arn:aws:identitystore:::group/" + group_membership["GroupId"], attached_policies=[])  for group_membership in group_memberships]
+                        group_membership_objs = [
+                            Group(
+                                arn="arn:aws:identitystore:::group/" + group_membership["GroupId"],
+                                attached_policies=[]
+                            )
+                            for group_membership in group_memberships
+                        ]
 
-                    N = Node(
-                        "arn:aws:identitystore:::user/" + user["UserId"],
-                        user["UserId"],
+                    user = Node(
+                        "arn:aws:identitystore:::user/" + user_data["UserId"],
+                        user_data["UserId"],
                         [], 
                         group_membership_objs,
                         None,
@@ -312,15 +318,15 @@ def process_arguments(parsed_args: Namespace):
                         None, 
                         False,
                         {},
-                        aws_data=user
+                        username=user_data["UserName"]
                     )
 
                     # This loop is for creating the group membership edges
                     for group_membership_obj in group_membership_objs:
-                        obj_edges.append(generate_group_membership_edge(N, group_membership_obj))
+                        obj_edges.append(generate_group_membership_edge(user, group_membership_obj))
 
-                    obj_nodes.append(N)
-                    print("\t{:<40} {}".format(user["UserName"], N.arn))
+                    obj_nodes.append(user)
+                    print("\t{:<40} {}".format(user_data["UserName"], user.arn))
                     
             # The array of user nodes and group membership edges is returned by the function
             return obj_nodes, obj_edges
@@ -420,28 +426,15 @@ def process_arguments(parsed_args: Namespace):
         org_tree.identity_stores = []
         stsclient = session.create_client('sts')
         current_account_id = stsclient.get_caller_identity()['Account']  # raises error if it's not workable
+
+        if not current_account_id == org_tree.management_account_id: # Might need to disable this due to delegated admins
+            logger.warning('Please run this command from the management account')
+            return 64
+
         sso_admin_client = session.create_client('sso-admin')
         sso_instances = sso_admin_client.list_instances()["Instances"]
         logger.debug("%s", sso_instances)
 
-        if not current_account_id == org_tree.management_account_id:
-            logger.warning('Please run this command from the management account')
-            return 64
-        
-        # Load accoung graphs
-        graph_objs = []
-        for account in org_tree.accounts:
-            try:
-                potential_path = os.path.join(get_storage_root(), account)
-                logger.debug('Trying to load a Graph from {}'.format(potential_path))
-                graph_obj = Graph.create_graph_from_local_disk(potential_path)
-                graph_objs.append(graph_obj)
-            except Exception as ex:
-                logger.warning('Unable to load a Graph object for account {}, possibly because it is not mapped yet. '
-                               'Please map all accounts and then update the Organization Tree '
-                               '(`pmapper orgs update --org $ORG_ID`).'.format(account))
-                logger.debug(str(ex))
-        
         # Loop through all SSO IDC identity providers and obtain the group and user nodes,
         # the user group membership and IDC account assignment edges
         for sso_instance in sso_instances:

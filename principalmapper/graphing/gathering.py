@@ -266,7 +266,7 @@ def get_nodes_groups_and_policies(iamclient) -> dict:
         result['nodes'].append(
             Node(
                 u['Arn'], u['UserId'], user_policies, group_list, None, None, 0, 'PasswordLastUsed' in u, False,
-                boundary_policy, False, _tags, aws_data=u
+                boundary_policy, False, _tags
             )
         )
 
@@ -295,7 +295,7 @@ def get_nodes_groups_and_policies(iamclient) -> dict:
             Node(
                 r['Arn'], r['RoleId'], role_policies, None, r['AssumeRolePolicyDocument'],
                 [x['Arn'] for x in r['InstanceProfileList']], 0, False, False,
-                None, False, _tags, aws_data=r
+                None, False, _tags
             )
         )
 
@@ -604,8 +604,7 @@ def get_unfilled_nodes(iamclient) -> List[Node]:
                 is_admin=False,
                 permissions_boundary=_pb,
                 has_mfa=False,
-                tags=None,  # TODO: fix tags for old user-gathering method 
-                aws_data=user
+                tags=None,  # TODO: fix tags for old user-gathering method
             ))
             logger.debug('Adding Node for user ' + user['Arn'])
 
@@ -633,7 +632,6 @@ def get_unfilled_nodes(iamclient) -> List[Node]:
                 permissions_boundary=_pb,
                 has_mfa=False,
                 tags=None,  # TODO: fix tags for old role-gathering method
-                aws_data=role
             ))
 
     # Get instance profiles, paginating results, and attach to roles as appropriate
