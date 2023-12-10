@@ -59,6 +59,10 @@ def generate_edges_locally(nodes: List[Node], scps: Optional[List[List[dict]]] =
     edges = []
     # check if destination is a role with an instance profile
     role_nodes = [node for node in nodes if ':role/' in node.arn and node.instance_profile]
+
+    if not role_nodes:
+        return []
+    
     total_nodes = len(role_nodes)
 
     num_processes = max(cpu_count() - 1, 1)  # Number of CPU cores minus one, but at least 1
