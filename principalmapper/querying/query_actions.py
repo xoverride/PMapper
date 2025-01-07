@@ -67,6 +67,10 @@ def query_response(graph: Graph, query: str, skip_admins: bool = False, resource
     # first form: "can X do Y with Z when A B C" (principal, action, resource, conditionA, etc.)
     if tokens[0] == 'can' and tokens[2] == 'do':  # can <X> do <Y>
         nodes.append(graph.get_node_by_searchable_name(tokens[1]))
+        if not nodes or not nodes[0]:
+            print("Failed to lookup Principal")
+            logger.debug("Failed to lookup Principal: {}".format(tokens[1]))
+            return
         action = tokens[3]
 
         if len(tokens) > 5:  # can <X> do <Y> with <Z>
