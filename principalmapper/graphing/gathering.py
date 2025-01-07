@@ -403,8 +403,15 @@ def get_kms_key_policies(session: botocore.session.Session, region_allow_list: O
             for page in kms_paginator.paginate():
                 cmks.extend([x['KeyArn'] for x in page['Keys']])
 
-            # Grab the key policies
-            for cmk in cmks:
+        except botocore.exceptions.ClientError as ex:
+            logger.info(
+                'Unable to search KMS in region {} for key policies. The region may be disabled, or the current principal may not be authorized to access the service. Continuing.'.format(
+                    kms_region))
+            logger.debug('Exception was: {}'.format(ex))
+            continue
+        # Grab the key policies
+        for cmk in cmks:
+            try:
                 policy_str = kmsclient.get_key_policy(KeyId=cmk, PolicyName='default')['Policy']
                 result.append(Policy(
                     cmk,
@@ -412,10 +419,12 @@ def get_kms_key_policies(session: botocore.session.Session, region_allow_list: O
                     json.loads(policy_str)
                 ))
                 logger.info('Caching policy for {}'.format(cmk))
-        except botocore.exceptions.ClientError as ex:
-            logger.info('Unable to search KMS in region {} for key policies. The region may be disabled, or the current principal may not be authorized to access the service. Continuing.'.format(kms_region))
-            logger.debug('Exception was: {}'.format(ex))
-            continue
+            except botocore.exceptions.ClientError as ex:
+                logger.info(
+                    'Unable to read KMS policy in region {} for key policies. Might not have resource-based policy access'.format(
+                        kms_region))
+                logger.debug('Exception was: {}'.format(ex))
+                pass
 
     return result
 
@@ -441,9 +450,16 @@ def get_sns_topic_policies(session: botocore.session.Session, region_allow_list:
             sns_paginator = snsclient.get_paginator('list_topics')
             for page in sns_paginator.paginate():
                 topics.extend([x['TopicArn'] for x in page['Topics']])
+        except botocore.exceptions.ClientError as ex:
+            logger.info(
+                'Unable to search SNS in region {} for topic policies. The region may be disabled, or the current principal may not be authorized to access the service. Continuing.'.format(
+                    sns_region))
+            logger.debug('Exception was: {}'.format(ex))
+            continue
 
-            # Grab the topic policies
-            for topic in topics:
+        # Grab the topic policies
+        for topic in topics:
+            try:
                 policy_str = snsclient.get_topic_attributes(TopicArn=topic)['Attributes']['Policy']
                 result.append(Policy(
                     topic,
@@ -451,10 +467,13 @@ def get_sns_topic_policies(session: botocore.session.Session, region_allow_list:
                     json.loads(policy_str)
                 ))
                 logger.info('Caching policy for {}'.format(topic))
-        except botocore.exceptions.ClientError as ex:
-            logger.info('Unable to search SNS in region {} for topic policies. The region may be disabled, or the current principal may not be authorized to access the service. Continuing.'.format(sns_region))
-            logger.debug('Exception was: {}'.format(ex))
-            continue
+            except botocore.exceptions.ClientError as ex:
+                logger.info(
+                    'Unable to get SNS region {} for topic policies. Might not have resource-based policy access.'.format(
+                        sns_region))
+                logger.debug('Exception was: {}'.format(ex))
+                pass
+
 
     return result
 
@@ -483,10 +502,17 @@ def get_sqs_queue_policies(session: botocore.session.Session, account_id: str,
                 queue_urls.extend(response['QueueUrls'])
             else:
                 continue
+        except botocore.exceptions.ClientError as ex:
+            logger.info(
+                'Unable to search SQS in region {} for queues. The region may be disabled, or the current principal may not be authorized to access the service. Continuing.'.format(
+                    sqs_region))
+            logger.debug('Exception was: {}'.format(ex))
+            continue
 
-            # Grab the queue policies
-            for queue_url in queue_urls:
-                queue_name = queue_url.split('/')[-1]
+        # Grab the queue policies
+        for queue_url in queue_urls:
+            queue_name = queue_url.split('/')[-1]
+            try:
                 sqs_policy_response = sqsclient.get_queue_attributes(QueueUrl=queue_url, AttributeNames=['Policy'])
                 if 'Policy' in sqs_policy_response:
                     sqs_policy_doc = json.loads(sqs_policy_response['Policy'])
@@ -506,9 +532,13 @@ def get_sqs_queue_policies(session: botocore.session.Session, account_id: str,
                         }
                     ))
                     logger.info('Queue {} does not have a queue policy, adding a "stub" policy instead.'.format(queue_name))
-        except botocore.exceptions.ClientError as ex:
-            logger.info('Unable to search SQS in region {} for queues. The region may be disabled, or the current principal may not be authorized to access the service. Continuing.'.format(sqs_region))
-            logger.debug('Exception was: {}'.format(ex))
+            except botocore.exceptions.ClientError as ex:
+                logger.info(
+                    'Unable to get SQS in region {} for queue policy. Might not have resource-based policy access.'.format(
+                        sqs_region))
+                logger.debug('Exception was: {}'.format(ex))
+                pass
+
 
     return result
 
@@ -538,9 +568,16 @@ def get_secrets_manager_policies(session: botocore.session.Session, region_allow
                         if 'PrimaryRegion' in entry and entry['PrimaryRegion'] != sm_region:
                             continue  # skip things we're supposed to find in other regions
                         secret_arns.append(entry['ARN'])
+        except botocore.exceptions.ClientError as ex:
+            logger.info('Unable to search Secrets Manager in region {} for secrets. The region may be disabled, or '
+                        'the current principal may not be authorized to access the service. '
+                        'Continuing.'.format(sm_region))
+            logger.debug('Exception was: {}'.format(ex))
+            continue
 
-            # Grab resource policies for each secret
-            for secret_arn in secret_arns:
+        # Grab resource policies for each secret
+        for secret_arn in secret_arns:
+            try:
                 sm_response = smclient.get_resource_policy(SecretId=secret_arn)
 
                 # verify that it is in the response and not None/empty
@@ -563,11 +600,11 @@ def get_secrets_manager_policies(session: botocore.session.Session, region_allow
                     ))
                     logger.info('Secret {} does not have a resource policy, inserting a "stub" policy instead'.format(secret_arn))
 
-        except botocore.exceptions.ClientError as ex:
-            logger.info('Unable to search Secrets Manager in region {} for secrets. The region may be disabled, or '
-                        'the current principal may not be authorized to access the service. '
-                        'Continuing.'.format(sm_region))
-            logger.debug('Exception was: {}'.format(ex))
+            except botocore.exceptions.ClientError as ex:
+                logger.info('Unable to read Secrets Manager policy in region {}. Might not have resource-based policy access. '
+                            .format(sm_region))
+                logger.debug('Exception was: {}'.format(ex))
+                pass
 
     return result
 
