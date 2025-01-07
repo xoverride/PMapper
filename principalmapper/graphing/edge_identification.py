@@ -31,6 +31,8 @@ from principalmapper.graphing.sagemaker_edges import SageMakerEdgeChecker
 from principalmapper.graphing.ssm_edges import SSMEdgeChecker
 from principalmapper.graphing.sts_edges import STSEdgeChecker
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import partial
 
 logger = logging.getLogger(__name__)
 
@@ -49,16 +51,84 @@ checker_map = {
 }
 
 
-def obtain_edges(session: Optional[botocore.session.Session], checker_list: List[str], nodes: List[Node],
-                 region_allow_list: Optional[List[str]] = None, region_deny_list: Optional[List[str]] = None,
-                 scps: Optional[List[List[dict]]] = None, client_args_map: Optional[dict] = None) -> List[Edge]:
-    """Given a list of nodes and a botocore Session, return a list of edges between those nodes. Only checks
-    against services passed in the checker_list param. """
-    result = []
+def check_service_edges(checker_name: str, session: botocore.session.Session,
+                        nodes: List[Node], region_allow_list: Optional[List[str]],
+                        region_deny_list: Optional[List[str]],
+                        scps: Optional[List[List[dict]]],
+                        client_args_map: Optional[dict]) -> List[Edge]:
+    """Helper function to check edges for a single service"""
+    if checker_name not in checker_map:
+        return []
+
+    checker_obj = checker_map[checker_name](session)
+    return checker_obj.return_edges(nodes, region_allow_list, region_deny_list, scps, client_args_map)
+
+
+def obtain_edges(session: Optional[botocore.session.Session],
+                 checker_list: List[str],
+                 nodes: List[Node],
+                 region_allow_list: Optional[List[str]] = None,
+                 region_deny_list: Optional[List[str]] = None,
+                 scps: Optional[List[List[dict]]] = None,
+                 client_args_map: Optional[dict] = None,
+                 max_workers: int = None) -> List[Edge]:
+    """
+    Given a list of nodes and a botocore Session, return a list of edges between those nodes.
+    Only checks against services passed in the checker_list param.
+
+    Args:
+        session: Botocore session
+        checker_list: List of service checkers to run
+        nodes: List of nodes to check connections between
+        region_allow_list: Optional list of allowed regions
+        region_deny_list: Optional list of denied regions
+        scps: Optional list of service control policies
+        client_args_map: Optional map of client arguments
+        max_workers: Maximum number of thread workers (defaults to min(32, len(checker_list)))
+
+    Returns:
+        List[Edge]: List of edges found between nodes
+    """
+    if not checker_list:
+        return []
+
+    # Filter invalid checkers early
+    valid_checkers = [check for check in checker_list if check in checker_map]
+    if not valid_checkers:
+        return []
+
     logger.info('Initiating edge checks.')
-    logger.debug('Services being checked for edges: {}'.format(checker_list))
-    for check in checker_list:
-        if check in checker_map:
-            checker_obj = checker_map[check](session)
-            result.extend(checker_obj.return_edges(nodes, region_allow_list, region_deny_list, scps, client_args_map))
-    return result
+    logger.debug('Services being checked for edges: %s', valid_checkers)
+
+    # Create partial function with fixed arguments
+    check_func = partial(check_service_edges,
+                         session=session,
+                         nodes=nodes,
+                         region_allow_list=region_allow_list,
+                         region_deny_list=region_deny_list,
+                         scps=scps,
+                         client_args_map=client_args_map)
+
+    # Default max_workers to min(32, len(valid_checkers))
+    if max_workers is None:
+        max_workers = min(32, len(valid_checkers))
+
+    results = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_checker = {
+            executor.submit(check_func, checker): checker
+            for checker in valid_checkers
+        }
+
+        # Collect results as they complete
+        for future in as_completed(future_to_checker):
+            checker = future_to_checker[future]
+            try:
+                edges = future.result()
+                results.extend(edges)
+            except Exception as exc:
+                logger.error('Checker %s generated an exception: %s', checker, exc)
+                continue
+
+    return results
