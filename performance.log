@@ -42,3 +42,12 @@ Graph Data for Account:  555045483459
   # of Groups:             1
   # of (tracked) Policies: 190
 ./pmapper.py --profile nb-read-only graph create  64.15s user 17.63s system 41% cpu 3:17.26 total
+
+
+bm
+Graph Data for Account:  555045483459
+  # of Nodes:              128 (22 admins)
+  # of Edges:              118
+  # of Groups:             1
+  # of (tracked) Policies: 205
+./pmapper.py --profile nb-read-only graph create  35.33s user 9.36s system 21% cpu 3:23.47 total
