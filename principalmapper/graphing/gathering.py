@@ -28,7 +28,10 @@ from principalmapper.graphing import edge_identification
 from principalmapper.querying import query_interface
 from principalmapper.util import arns
 from principalmapper.util.botocore_tools import get_regions_to_search
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
+
+import concurrent.futures
+from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 
@@ -381,44 +384,101 @@ def get_s3_bucket_policies(session: botocore.session.Session, client_args_map: O
     return result
 
 
-def get_kms_key_policies(session: botocore.session.Session, region_allow_list: Optional[List[str]] = None,
-                         region_deny_list: Optional[List[str]] = None, client_args_map: Optional[dict] = None) -> List[Policy]:
-    """Using a botocore Session object, return a list of Policy objects representing the key policies of each
-    KMS key in this account.
+def fetch_region_policies(session: botocore.session.Session, region: str,
+                          client_args: Dict) -> List[Policy]:
+    """Fetch all KMS key policies for a specific region."""
+    results = []
+    try:
+        kmsclient = session.create_client('kms', region_name=region, **client_args)
 
-    The region allow/deny lists are mutually-exclusive (i.e. at least one of which has the value None) lists of
-    allowed/denied regions to pull data from.
-    """
-    result = []
+        # Use max page size to reduce number of API calls
+        paginator = kmsclient.get_paginator('list_keys')
+        page_iterator = paginator.paginate(PaginationConfig={'PageSize': 1000})
 
-    kmsargs = client_args_map.get('kms', {})
+        # Collect all keys first
+        all_keys = []
+        for page in page_iterator:
+            all_keys.extend([x['KeyArn'] for x in page['Keys']])
 
-    # Iterate through all regions of KMS where possible
-    for kms_region in get_regions_to_search(session, 'kms', region_allow_list, region_deny_list):
-        try:
-            # Grab the keys
-            cmks = []
-            kmsclient = session.create_client('kms', region_name=kms_region, **kmsargs)
-            kms_paginator = kmsclient.get_paginator('list_keys')
-            for page in kms_paginator.paginate():
-                cmks.extend([x['KeyArn'] for x in page['Keys']])
+        # Batch process key policies using thread pool
+        def get_key_policy(key_arn: str) -> Optional[Policy]:
+            try:
+                policy_str = kmsclient.get_key_policy(
+                    KeyId=key_arn,
+                    PolicyName='default'
+                )['Policy']
 
-            # Grab the key policies
-            for cmk in cmks:
-                policy_str = kmsclient.get_key_policy(KeyId=cmk, PolicyName='default')['Policy']
-                result.append(Policy(
-                    cmk,
-                    cmk.split('/')[-1],  # CMK ARN Format: arn:<partition>:kms:<region>:<account>:key/<Key ID>
+                return Policy(
+                    key_arn,
+                    key_arn.split('/')[-1],
                     json.loads(policy_str)
-                ))
-                logger.info('Caching policy for {}'.format(cmk))
-        except botocore.exceptions.ClientError as ex:
-            logger.info('Unable to search KMS in region {} for key policies. The region may be disabled, or the current principal may not be authorized to access the service. Continuing.'.format(kms_region))
-            logger.debug('Exception was: {}'.format(ex))
-            continue
+                )
+            except ClientError as e:
+                logger.debug(f'Failed to get policy for key {key_arn}: {e}')
+                return None
 
-    return result
+        # Use ThreadPoolExecutor for concurrent API calls within the region
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_key = {
+                executor.submit(get_key_policy, key): key
+                for key in all_keys
+            }
 
+            for future in concurrent.futures.as_completed(future_to_key):
+                policy = future.result()
+                if policy:
+                    results.append(policy)
+                    logger.info(f'Cached policy for {future_to_key[future]}')
+
+    except ClientError as ex:
+        logger.info(
+            f'Unable to search KMS in region {region} for key policies. '
+            'The region may be disabled, or the current principal may not '
+            'be authorized to access the service. Continuing.'
+        )
+        logger.debug(f'Exception was: {ex}')
+
+    return results
+
+
+def get_kms_key_policies(
+        session: botocore.session.Session,
+        region_allow_list: Optional[List[str]] = None,
+        region_deny_list: Optional[List[str]] = None,
+        client_args_map: Optional[dict] = None
+) -> List[Policy]:
+    """Using a botocore Session object, return a list of Policy objects representing
+    the key policies of each KMS key in this account.
+
+    The region allow/deny lists are mutually-exclusive (i.e. at least one of which
+    has the value None) lists of allowed/denied regions to pull data from.
+
+    This optimized version:
+    1. Uses ThreadPoolExecutor for parallel region processing
+    2. Uses nested thread pools for concurrent API calls within each region
+    3. Maximizes page sizes to reduce API calls
+    4. Implements proper error handling and logging
+    """
+    client_args = client_args_map.get('kms', {}) if client_args_map else {}
+    regions = get_regions_to_search(session, 'kms', region_allow_list, region_deny_list)
+
+    all_policies = []
+    # Use ThreadPoolExecutor instead of ProcessPoolExecutor for region-level parallelization
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(regions)) as executor:
+        future_to_region = {
+            executor.submit(fetch_region_policies, session, region, client_args): region
+            for region in regions
+        }
+
+        for future in concurrent.futures.as_completed(future_to_region):
+            region = future_to_region[future]
+            try:
+                region_policies = future.result()
+                all_policies.extend(region_policies)
+            except Exception as e:
+                logger.error(f'Failed to process region {region}: {e}')
+
+    return all_policies
 
 def get_sns_topic_policies(session: botocore.session.Session, region_allow_list: Optional[List[str]] = None,
                            region_deny_list: Optional[List[str]] = None, client_args_map: Optional[dict] = None) -> List[Policy]:
