@@ -410,8 +410,185 @@ class ConcurrentAWSMapper:
                             node.is_admin = True
                             return
 
+    def _get_sqs_queue_policies(self, region_allow_list: Optional[List[str]] = None,
+                                region_deny_list: Optional[List[str]] = None,
+                                client_args_map: Optional[dict] = None) -> List[Policy]:
+        """Fixed version of SQS queue policy collection with proper queue listing and error handling."""
+        sqsargs = client_args_map.get('sqs', {}) if client_args_map else {}
+        regions = get_regions_to_search(self.session, 'sqs', region_allow_list, region_deny_list)
+        policies = []
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # First, get all queues from all regions
+            region_queues_futures = {
+                executor.submit(self._list_queues_in_region, region, sqsargs): region
+                for region in regions
+            }
+
+            # Process each region's queues
+            for future in concurrent.futures.as_completed(region_queues_futures):
+                region = region_queues_futures[future]
+                try:
+                    region_queues = future.result()
+                    if region_queues:  # If we found any queues in this region
+                        # Create a new executor for queue policy fetching
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as queue_executor:
+                            queue_futures = {
+                                queue_executor.submit(
+                                    self._get_single_queue_policy,
+                                    region,
+                                    queue_url,
+                                    sqsargs
+                                ): queue_url
+                                for queue_url in region_queues
+                            }
+
+                            for queue_future in concurrent.futures.as_completed(queue_futures):
+                                queue_url = queue_futures[queue_future]
+                                try:
+                                    policy = queue_future.result()
+                                    if policy:
+                                        policies.append(policy)
+                                except Exception as e:
+                                    logger.warning(
+                                        f"Failed to get policy for queue {queue_url} in region {region}: {str(e)}")
+                except Exception as e:
+                    logger.warning(f"Failed to list queues in region {region}: {str(e)}")
+
+        return policies
+
+    def _list_queues_in_region(self, region: str, sqsargs: dict) -> List[str]:
+        """Helper method to list all queues in a region with proper pagination."""
+        sqsclient = self.session.create_client('sqs', region_name=region, **sqsargs)
+        queues = []
+
+        try:
+            # SQS list_queues doesn't have a paginator, need to handle pagination manually
+            response = sqsclient.list_queues()
+            while True:
+                if 'QueueUrls' in response:
+                    queues.extend(response['QueueUrls'])
+
+                if 'NextToken' not in response:
+                    break
+
+                response = sqsclient.list_queues(NextToken=response['NextToken'])
+
+            return queues
+        except Exception as e:
+            logger.warning(f"Error listing queues in region {region}: {str(e)}")
+            return []
+
+    def _get_single_queue_policy(self, region: str, queue_url: str, sqsargs: dict) -> Optional[Policy]:
+        """Helper method to get policy for a single queue with proper error handling."""
+        try:
+            sqsclient = self.session.create_client('sqs', region_name=region, **sqsargs)
+            queue_name = queue_url.split('/')[-1]
+
+            response = sqsclient.get_queue_attributes(
+                QueueUrl=queue_url,
+                AttributeNames=['Policy']
+            )
+
+            if 'Attributes' in response and 'Policy' in response['Attributes']:
+                policy = json.loads(response['Attributes']['Policy'])
+            else:
+                # Create stub policy if no policy exists
+                policy = {
+                    "Statement": [],
+                    "Version": "2012-10-17"
+                }
+
+            queue_arn = f'arn:aws:sqs:{region}:{self.account_id}:{queue_name}'
+            return Policy(queue_arn, queue_name, policy)
+
+        except Exception as e:
+            logger.warning(f"Failed to get policy for queue {queue_url}: {str(e)}")
+            return None
+
+    def _get_secrets_manager_policies(self, region_allow_list: Optional[List[str]] = None,
+                                      region_deny_list: Optional[List[str]] = None,
+                                      client_args_map: Optional[dict] = None) -> List[Policy]:
+        """Fixed version of Secrets Manager policy collection with correct pagination and region handling."""
+        smargs = client_args_map.get('secretsmanager', {}) if client_args_map else {}
+        regions = get_regions_to_search(self.session, 'secretsmanager', region_allow_list, region_deny_list)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = {
+                executor.submit(self._get_secrets_policies_for_region, region, smargs): region
+                for region in regions
+            }
+
+            policies = []
+            for future in concurrent.futures.as_completed(futures):
+                region = futures[future]
+                try:
+                    region_policies = future.result()
+                    policies.extend(region_policies)
+                except Exception as e:
+                    logger.warning(f"Failed to get Secrets Manager policies in region {region}: {str(e)}")
+
+        return policies
+
+    def _get_secrets_policies_for_region(self, region: str, smargs: dict) -> List[Policy]:
+        """Fixed version of region-specific Secrets Manager policy collection."""
+        smclient = self.session.create_client('secretsmanager', region_name=region, **smargs)
+        secrets = []
+
+        try:
+            paginator = smclient.get_paginator('list_secrets')
+            for page in paginator.paginate():
+                if 'SecretList' in page:
+                    for secret in page['SecretList']:
+                        # Only process secrets if they belong to this region
+                        if 'PrimaryRegion' in secret:
+                            if secret['PrimaryRegion'] != region:
+                                continue
+                        secrets.append(secret)
+        except Exception as e:
+            logger.warning(f"Failed to list secrets in region {region}: {str(e)}")
+            return []
+
+        # Process secrets concurrently
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = {
+                executor.submit(self._get_single_secret_policy, smclient, secret['ARN'], secret['Name']): secret['ARN']
+                for secret in secrets
+            }
+
+            policies = []
+            for future in concurrent.futures.as_completed(futures):
+                secret_arn = futures[future]
+                try:
+                    policy = future.result()
+                    if policy:
+                        policies.append(policy)
+                except Exception as e:
+                    logger.warning(f"Failed to get policy for secret {secret_arn}: {str(e)}")
+
+        return policies
+
+    def _get_single_secret_policy(self, smclient, secret_arn: str, secret_name: str) -> Optional[Policy]:
+        """Helper method to get policy for a single secret with proper error handling."""
+        try:
+            response = smclient.get_resource_policy(SecretId=secret_arn)
+
+            if 'ResourcePolicy' in response and response['ResourcePolicy']:
+                policy = json.loads(response['ResourcePolicy'])
+            else:
+                # Create stub policy if no policy exists
+                policy = {
+                    "Statement": [],
+                    "Version": "2012-10-17"
+                }
+
+            return Policy(secret_arn, secret_name, policy)
+        except Exception as e:
+            logger.warning(f"Failed to get policy for secret {secret_arn}: {str(e)}")
+            return None
+
     def _get_s3_bucket_policies(self, client_args_map: Optional[dict] = None) -> List[Policy]:
-        """Concurrently gather S3 bucket policies."""
+        """Fixed version of S3 bucket policy collection with improved error handling."""
         s3args = client_args_map.get('s3', {}) if client_args_map else {}
         s3client = self.session.create_client('s3', **s3args)
 
@@ -440,7 +617,7 @@ class ConcurrentAWSMapper:
         return policies
 
     def _get_single_bucket_policy(self, s3client, bucket_name: str) -> Optional[Policy]:
-        """Get policy for a single S3 bucket."""
+        """Helper method to get policy for a single bucket with standardized error handling."""
         bucket_arn = f'arn:aws:s3:::{bucket_name}'
         try:
             policy = json.loads(s3client.get_bucket_policy(Bucket=bucket_name)['Policy'])
@@ -592,119 +769,7 @@ class ConcurrentAWSMapper:
             logger.warning(f"Failed to get policy for SNS topic {topic_arn}: {str(e)}")
             return None
 
-    def _get_sqs_queue_policies(self, region_allow_list: Optional[List[str]] = None,
-                             region_deny_list: Optional[List[str]] = None,
-                             client_args_map: Optional[dict] = None) -> List[Policy]:
-        """Concurrently gather SQS queue policies across regions."""
-        sqsargs = client_args_map.get('sqs', {}) if client_args_map else {}
-        regions = get_regions_to_search(self.session, 'sqs', region_allow_list, region_deny_list)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = {
-                executor.submit(self._get_single_sqs_policy, region, sqsargs): region
-                for region in regions
-            }
-
-            policies = []
-            for future in concurrent.futures.as_completed(futures):
-                region = futures[future]
-                try:
-                    region_policies = future.result()
-                    policies.extend(region_policies)
-                except Exception as e:
-                    logger.warning(f"Failed to get SQS policies in region {region}: {str(e)}")
-
-        return policies
-
-    def _get_single_sqs_policy(self, sqsclient, queue_url: str, region: str) -> Optional[Policy]:
-        """Get policy for a single SQS queue."""
-        try:
-            queue_name = queue_url.split('/')[-1]
-            attributes = sqsclient.get_queue_attributes(QueueUrl=queue_url, AttributeNames=['Policy'])
-
-            if 'Policy' in attributes['Attributes']:
-                policy = json.loads(attributes['Attributes']['Policy'])
-            else:
-                policy = {"Statement": [], "Version": "2012-10-17"}
-
-            queue_arn = f'arn:aws:sqs:{region}:{self.account_id}:{queue_name}'
-            return Policy(queue_arn, queue_name, policy)
-        except Exception as e:
-            logger.warning(f"Failed to get policy for SQS queue {queue_url}: {str(e)}")
-            return None
-
-    def _get_secrets_manager_policies(self, region_allow_list: Optional[List[str]] = None,
-                                   region_deny_list: Optional[List[str]] = None,
-                                   client_args_map: Optional[dict] = None) -> List[Policy]:
-        """Concurrently gather Secrets Manager policies across regions."""
-        smargs = client_args_map.get('secretsmanager', {}) if client_args_map else {}
-        regions = get_regions_to_search(self.session, 'secretsmanager', region_allow_list, region_deny_list)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = {
-                executor.submit(self._get_secrets_policies_for_region, region, smargs): region
-                for region in regions
-            }
-
-            policies = []
-            for future in concurrent.futures.as_completed(futures):
-                region = futures[future]
-                try:
-                    region_policies = future.result()
-                    policies.extend(region_policies)
-                except Exception as e:
-                    logger.warning(f"Failed to get Secrets Manager policies in region {region}: {str(e)}")
-
-        return policies
-
-    def _get_secrets_policies_for_region(self, region: str, smargs: dict) -> List[Policy]:
-        """Get Secrets Manager policies for a single region."""
-        smclient = self.session.create_client('secretsmanager', region_name=region, **smargs)
-        secrets = []
-
-        try:
-            paginator = smclient.get_paginator('list_secrets')
-            for page in paginator.paginate():
-                if 'SecretList' in page:
-                    for secret in page['SecretList']:
-                        if 'PrimaryRegion' not in secret or secret['PrimaryRegion'] == region:
-                            secrets.append(secret)
-        except Exception as e:
-            logger.warning(f"Failed to list secrets in region {region}: {str(e)}")
-            return []
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = {
-                executor.submit(self._get_single_secret_policy, smclient, secret['ARN'], secret['Name']): secret['ARN']
-                for secret in secrets
-            }
-
-            policies = []
-            for future in concurrent.futures.as_completed(futures):
-                secret_arn = futures[future]
-                try:
-                    policy = future.result()
-                    if policy:
-                        policies.append(policy)
-                except Exception as e:
-                    logger.warning(f"Failed to get policy for secret {secret_arn}: {str(e)}")
-
-        return policies
-
-    def _get_single_secret_policy(self, smclient, secret_arn: str, secret_name: str) -> Optional[Policy]:
-        """Get policy for a single Secrets Manager secret."""
-        try:
-            response = smclient.get_resource_policy(SecretId=secret_arn)
-            
-            if 'ResourcePolicy' in response and response['ResourcePolicy']:
-                policy = json.loads(response['ResourcePolicy'])
-            else:
-                policy = {"Statement": [], "Version": "2012-10-17"}
-                
-            return Policy(secret_arn, secret_name, policy)
-        except Exception as e:
-            logger.warning(f"Failed to get policy for secret {secret_arn}: {str(e)}")
-            return None
 
     @staticmethod
     def _get_policy_by_arn(arn: str, policies: List[Policy]) -> Optional[Policy]:
